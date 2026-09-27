@@ -1,7 +1,7 @@
 package dev.vy.betterpv.client;
 
+import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import net.minecraft.network.chat.ClickEvent;
@@ -11,55 +11,34 @@ import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.network.chat.Style;
 
 /**
- * Makes party/friends-list/ranked-sender names open {@code /pv}.
+ * Opens {@code /pv} from chat the same way SkyBlock Profile Viewer does:
  *
- * <p>Hypixel attaches SocialOptions clicks (and profile hover) on many names, but those
- * only work in lobbies. For lines where we can parse the IGN from the text, replace the
- * click with {@code /pv <name>} so it works in SkyBlock too. Skips only when the name
- * already has our {@code /pv} click.
+ * <ol>
+ *   <li>Remap existing Hypixel {@code /socialoptions} / {@code /viewprofile} clicks (lobby-only
+ *       on Hypixel) to {@code /pv &lt;name&gt;} so they work in SkyBlock.</li>
+ *   <li>Optionally make whole {@code Party|Guild|Officer|Co-op > Name: ...} lines clickable.</li>
+ * </ol>
  *
- * <p>Wired via Fabric {@code MODIFY_GAME} (Hypixel party / {@code /fl} / chat are game
- * messages).
+ * <p>Never invents clicks from arbitrary text (that falsely matched mod banners like
+ * {@code [Detexturify] Update available: ...}).
+ *
+ * <p>Wired via Fabric {@code MODIFY_GAME}.
  */
 public final class ChatClickProcessor {
-	private static final Pattern PLAYER_NAME_PATTERN = Pattern.compile("[A-Za-z0-9_]{3,16}");
+	private static final Pattern PLAYER_NAME_PATTERN = Pattern.compile("[A-Za-z0-9_]{1,16}");
 	private static final Pattern UUID_PATTERN = Pattern.compile(
 		"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 	);
-	/** Hypixel often uses a curly apostrophe in "name's profile". */
+	/** Same hover Hypixel puts on SocialOptions / viewprofile name spans. */
 	private static final Pattern VIEW_PROFILE_HOVER = Pattern.compile(
-		"(?i)Click(?: here)? to view ([A-Za-z0-9_]{1,16})['\u2019\u02BC\u2018]?s profile"
-	);
-	/** {@code [MVP+] Name joined the party.} */
-	private static final Pattern PARTY_JOIN = Pattern.compile(
-		"(?i)^(?:\\[[^\\]]+]\\s*)?([A-Za-z0-9_]{3,16})\\s+joined the party\\.?\\s*$"
-	);
-	/** {@code You have joined [MVP+] Name's party!} */
-	private static final Pattern YOU_JOINED_PARTY = Pattern.compile(
-		"(?i)^You have joined\\s+(?:\\[[^\\]]+]\\s*)?([A-Za-z0-9_]{3,16})['\u2019\u02BC\u2018]?s?\\s+party!?\\s*$"
+		"(?i)^Click here to view ([A-Za-z0-9_]{1,16})['\u2019\u02BC\u2018]?s profile$"
 	);
 	/**
-	 * Dungeon / Kuudra Party Finder:
-	 * {@code Party Finder > Name joined the dungeon group! (...)}
-	 * {@code Party Finder > Name joined the group! (...)}
+	 * SkyBlock PV {@code otherChatRegex}: channel chat only.
+	 * {@code Party > [MVP+] Name [Elite]: hello}
 	 */
-	private static final Pattern PARTY_FINDER_JOIN = Pattern.compile(
-		"(?i)^Party Finder\\s*>\\s*(?:\\[[^\\]]+]\\s*)?([A-Za-z0-9_]{3,16})\\s+joined the (?:dungeon )?group!"
-	);
-	/**
-	 * Hypixel {@code /fl} lines:
-	 * {@code Name is in SkyBlock - Private Island}
-	 * {@code Name is offline} / {@code Name is currently offline}
-	 */
-	private static final Pattern FRIENDS_LIST_LINE = Pattern.compile(
-		"(?i)^(?:\\[[^\\]]+]\\s*)?([A-Za-z0-9_]{3,16})\\s+is\\s+(?:in\\b|(?:currently\\s+)?offline\\b)"
-	);
-	/**
-	 * Username immediately before {@code : }, optionally followed by a guild rank
-	 * tag such as {@code [Elite]} / {@code [Kitten]} (not the MVP rank before the name).
-	 */
-	private static final Pattern SENDER_BEFORE_COLON = Pattern.compile(
-		"([A-Za-z0-9_]{3,16})(?:\\s*\\[[^\\]]+])?\\s*$"
+	private static final Pattern CHANNEL_CHAT = Pattern.compile(
+		"(?i)^(?:Party|Guild|Officer|Co-op) > (?:\\[[^\\]]*\\]\\s*)?([A-Za-z0-9_]{1,16})(?:\\s*\\[[^\\]]*\\])?: .+"
 	);
 
 	private ChatClickProcessor() {
@@ -70,234 +49,139 @@ public final class ChatClickProcessor {
 			return null;
 		}
 
+		Component remapped = remapSocialOptions(component);
+		if (remapped != component) {
+			return remapped;
+		}
+		return maybeChannelChatClick(component);
+	}
+
+	/**
+	 * Walk siblings (preserving structure/colors) and swap Hypixel profile clicks to /pv.
+	 * Mirrors meowdding/skyblock-pv {@code ClickableChatMessages.onAllChat}.
+	 */
+	private static Component remapSocialOptions(Component component) {
+		List<Component> siblings = component.getSiblings();
+		if (siblings.isEmpty()) {
+			return component;
+		}
+
+		MutableComponent output = component.copy();
+		output.getSiblings().clear();
+		boolean changed = false;
+
+		for (Component sibling : siblings) {
+			String command = runCommandOf(sibling.getStyle());
+			String hoverText = hoverPlain(sibling.getStyle());
+			boolean hypixelProfile = isHypixelProfileCommand(command) && hoverText != null;
+			if (!hypixelProfile) {
+				output.append(sibling);
+				continue;
+			}
+
+			String username = usernameFromSocial(command, hoverText);
+			if (username == null) {
+				output.append(sibling);
+				continue;
+			}
+
+			MutableComponent nameComponent = sibling.copy();
+			nameComponent.setStyle(pvStyle(nameComponent.getStyle(), username));
+			output.append(nameComponent);
+			changed = true;
+		}
+
+		return changed ? output : component;
+	}
+
+	/**
+	 * SkyBlock PV {@code onOtherChat}: whole-line click for channel messages only.
+	 */
+	private static Component maybeChannelChatClick(Component component) {
 		String plain = component.getString();
-		NameRange range = findClickableNameRange(plain);
-		if (range == null) {
+		if (plain == null || plain.isBlank()) {
 			return component;
 		}
-
-		// Hypixel SocialOptions is lobby-only ("You can only use the Social Menu in lobbies!").
-		// Always swap to /pv when we know the IGN from the line text. Skip only if already ours.
-		if (rangeAlreadyHasPvClick(component, range)) {
+		Matcher matcher = CHANNEL_CHAT.matcher(plain.trim());
+		if (!matcher.matches()) {
 			return component;
 		}
-
-		MutableComponent result = Component.empty();
-		int[] index = {0};
-		boolean[] changed = {false};
-
-		component.visit((style, segment) -> {
-			if (!segment.isEmpty()) {
-				appendSegment(result, segment, style, index[0], range, changed);
-				index[0] += segment.length();
-			}
-			return Optional.empty();
-		}, Style.EMPTY);
-
-		return changed[0] ? result : component;
+		String username = matcher.group(1);
+		if (username == null || !PLAYER_NAME_PATTERN.matcher(username).matches()) {
+			return component;
+		}
+		if (alreadyHasPvClick(component)) {
+			return component;
+		}
+		MutableComponent copy = component.copy();
+		copy.setStyle(pvStyle(copy.getStyle(), username));
+		return copy;
 	}
 
-	private static boolean rangeAlreadyHasPvClick(Component component, NameRange range) {
-		int[] index = {0};
-		boolean[] found = {false};
-		component.visit((style, segment) -> {
-			if (found[0] || segment.isEmpty()) {
-				return Optional.empty();
-			}
-			int start = index[0];
-			int end = start + segment.length();
-			index[0] = end;
-			if (end <= range.start || start >= range.end) {
-				return Optional.empty();
-			}
-			ClickEvent click = style.getClickEvent();
-			if (click instanceof ClickEvent.RunCommand run) {
-				String cmd = run.command();
-				if (cmd != null) {
-					String t = cmd.trim();
-					if (t.startsWith("/")) {
-						t = t.substring(1);
-					}
-					String lower = t.toLowerCase(Locale.ROOT);
-					if (lower.equals("pv") || lower.startsWith("pv ") || lower.startsWith("betterpv pv")) {
-						found[0] = true;
-					}
-				}
-			}
-			return Optional.empty();
-		}, Style.EMPTY);
-		return found[0];
+	private static boolean alreadyHasPvClick(Component component) {
+		ClickEvent click = component.getStyle().getClickEvent();
+		if (click instanceof ClickEvent.RunCommand run) {
+			String cmd = normalizeCommand(run.command());
+			return cmd != null && (cmd.equals("pv") || cmd.startsWith("pv ") || cmd.startsWith("betterpv pv"));
+		}
+		return false;
 	}
 
-	private static NameRange findClickableNameRange(String text) {
-		if (text == null || text.isBlank()) {
+	private static boolean isHypixelProfileCommand(String command) {
+		if (command == null) {
+			return false;
+		}
+		String lower = command.toLowerCase(Locale.ROOT);
+		return lower.startsWith("/socialoptions") || lower.startsWith("socialoptions")
+			|| lower.startsWith("/viewprofile") || lower.startsWith("viewprofile");
+	}
+
+	private static String runCommandOf(Style style) {
+		if (style == null) {
 			return null;
 		}
-		String trimmed = text.trim();
-		NameRange party = partyJoinRange(text, trimmed);
-		if (party != null) {
-			return party;
-		}
-		NameRange friends = friendsListRange(text, trimmed);
-		if (friends != null) {
-			return friends;
-		}
-		// Only inject on clear Hypixel channel/rank senders. Bare "FooClient: ..." false
-		// positives used to rebuild whole lines and bleach colors.
-		return findChatSenderRange(text);
-	}
-
-	private static NameRange friendsListRange(String full, String trimmed) {
-		Matcher m = FRIENDS_LIST_LINE.matcher(trimmed);
-		if (!m.find()) {
-			return null;
-		}
-		return rangeForGroup(full, trimmed, m, 1);
-	}
-
-	private static NameRange partyJoinRange(String full, String trimmed) {
-		Matcher m = PARTY_JOIN.matcher(trimmed);
-		if (m.find()) {
-			return rangeForGroup(full, trimmed, m, 1);
-		}
-		m = YOU_JOINED_PARTY.matcher(trimmed);
-		if (m.find()) {
-			return rangeForGroup(full, trimmed, m, 1);
-		}
-		m = PARTY_FINDER_JOIN.matcher(trimmed);
-		if (m.find()) {
-			return rangeForGroup(full, trimmed, m, 1);
+		ClickEvent click = style.getClickEvent();
+		if (click instanceof ClickEvent.RunCommand run) {
+			return run.command();
 		}
 		return null;
 	}
 
-	private static NameRange rangeForGroup(String full, String trimmed, Matcher matcher, int group) {
-		String name = matcher.group(group);
-		if (name == null || !PLAYER_NAME_PATTERN.matcher(name).matches()) {
+	private static String hoverPlain(Style style) {
+		if (style == null) {
 			return null;
 		}
-		int trimOffset = full.indexOf(trimmed);
-		if (trimOffset < 0) {
-			trimOffset = 0;
+		HoverEvent hover = style.getHoverEvent();
+		if (hover instanceof HoverEvent.ShowText show) {
+			return show.value().getString();
 		}
-		int start = trimOffset + matcher.start(group);
-		int end = trimOffset + matcher.end(group);
-		if (start < 0 || end > full.length() || start >= end) {
-			return null;
-		}
-		return new NameRange(start, end, name);
-	}
-
-	private static NameRange findChatSenderRange(String text) {
-		if (text == null || text.isBlank()) {
-			return null;
-		}
-
-		int delimiter = text.indexOf(": ");
-		if (delimiter <= 0) {
-			return null;
-		}
-		String beforeColon = text.substring(0, delimiter);
-		if (isRosterOrSystemLabel(beforeColon)) {
-			return null;
-		}
-		if (!looksLikeHypixelChatSender(beforeColon)) {
-			return null;
-		}
-
-		Matcher matcher = SENDER_BEFORE_COLON.matcher(beforeColon);
-		if (!matcher.find()) {
-			return null;
-		}
-		String name = matcher.group(1);
-		if (!PLAYER_NAME_PATTERN.matcher(name).matches()) {
-			return null;
-		}
-		String lower = name.toLowerCase(Locale.ROOT);
-		if (lower.endsWith("client") || lower.endsWith("mod") || "npc".equals(lower)) {
-			return null;
-		}
-		int start = matcher.start(1);
-		int end = matcher.end(1);
-		return new NameRange(start, end, name);
+		return null;
 	}
 
 	/**
-	 * Require Hypixel channel / msg / rank markers so mod banners like
-	 * {@code OdinClient: ...} are never treated as player chat.
+	 * SkyBlock PV {@code getUsername}: socialoptions arg, else hover profile line.
 	 */
-	private static boolean looksLikeHypixelChatSender(String beforeColon) {
-		String trimmed = beforeColon.trim();
-		if (trimmed.isEmpty()) {
-			return false;
+	private static String usernameFromSocial(String command, String hoverText) {
+		String fromCommand = usernameFromCommand(command);
+		if (fromCommand != null) {
+			return fromCommand;
 		}
-		String upper = trimmed.toUpperCase(Locale.ROOT);
-		if (upper.contains(" > ")) {
-			return true;
+		if (hoverText == null || hoverText.isBlank()) {
+			return null;
 		}
-		if (upper.startsWith("FROM ") || upper.startsWith("TO ")) {
-			return true;
+		for (String line : hoverText.split("\\R")) {
+			Matcher matcher = VIEW_PROFILE_HOVER.matcher(line.trim());
+			if (matcher.matches()) {
+				String name = matcher.group(1);
+				if (PLAYER_NAME_PATTERN.matcher(name).matches()) {
+					return name;
+				}
+			}
 		}
-		// Ranked chat: [VIP] Name / [MVP+] Name
-		return trimmed.charAt(0) == '[' && trimmed.indexOf(']') > 1;
+		return null;
 	}
 
-	/**
-	 * Skip party/guild roster dumps ("PARTY LEADER: ...") but allow real chat
-	 * ("Party > Name: ...", "Guild > Name: ...", "From Name: ...").
-	 */
-	private static boolean isRosterOrSystemLabel(String beforeColon) {
-		String upper = beforeColon.trim().toUpperCase(Locale.ROOT);
-		if (upper.contains(" > ")) {
-			return false;
-		}
-		if (upper.startsWith("FROM ") || upper.startsWith("TO ")) {
-			return false;
-		}
-		return upper.startsWith("PARTY ")
-			|| upper.equals("PARTY")
-			|| upper.equals("PARTY LEADER")
-			|| upper.equals("PARTY MODERATORS")
-			|| upper.equals("PARTY MEMBERS")
-			|| upper.startsWith("GUILD ")
-			|| upper.equals("GUILD")
-			|| upper.equals("OFFICER")
-			|| upper.startsWith("OFFICER ")
-			|| upper.startsWith("ONLINE ")
-			|| upper.startsWith("MEMBERS ")
-			|| upper.startsWith("TRADE");
-	}
-
-	private static void appendSegment(
-		MutableComponent target,
-		String text,
-		Style style,
-		int segmentStart,
-		NameRange range,
-		boolean[] changed
-	) {
-		// Never remap existing Hypixel profile styles here. Flattening them bleached chat colors.
-		int segmentEnd = segmentStart + text.length();
-		if (range == null || range.end <= segmentStart || range.start >= segmentEnd) {
-			target.append(Component.literal(text).setStyle(style));
-			return;
-		}
-
-		int localStart = Math.max(0, range.start - segmentStart);
-		int localEnd = Math.min(text.length(), range.end - segmentStart);
-
-		if (localStart > 0) {
-			target.append(Component.literal(text.substring(0, localStart)).setStyle(style));
-		}
-
-		target.append(Component.literal(text.substring(localStart, localEnd)).setStyle(pvStyle(style, range.name)));
-		changed[0] = true;
-
-		if (localEnd < text.length()) {
-			target.append(Component.literal(text.substring(localEnd)).setStyle(style));
-		}
-	}
-
+	/** Used by {@link ProfileViewerOpener} when clicking an unmapped Hypixel style. */
 	static String usernameFromHypixelStyle(Style style) {
 		if (style == null) {
 			return null;
@@ -316,14 +200,15 @@ public final class ChatClickProcessor {
 			}
 		}
 
-		HoverEvent hover = style.getHoverEvent();
-		if (hover instanceof HoverEvent.ShowText show) {
-			String hoverText = show.value().getString();
-			Matcher matcher = VIEW_PROFILE_HOVER.matcher(hoverText);
-			if (matcher.find()) {
-				String name = matcher.group(1);
-				if (PLAYER_NAME_PATTERN.matcher(name).matches()) {
-					return name;
+		String hoverText = hoverPlain(style);
+		if (hoverText != null) {
+			for (String line : hoverText.split("\\R")) {
+				Matcher matcher = VIEW_PROFILE_HOVER.matcher(line.trim());
+				if (matcher.find()) {
+					String name = matcher.group(1);
+					if (PLAYER_NAME_PATTERN.matcher(name).matches()) {
+						return name;
+					}
 				}
 			}
 		}
@@ -344,8 +229,6 @@ public final class ChatClickProcessor {
 			rest = trimmed.substring("socialoptions".length()).trim();
 		} else if (lower.startsWith("viewprofile")) {
 			rest = trimmed.substring("viewprofile".length()).trim();
-		} else if (lower.startsWith("view ")) {
-			rest = trimmed.substring("view ".length()).trim();
 		} else {
 			return null;
 		}
@@ -364,13 +247,22 @@ public final class ChatClickProcessor {
 		return null;
 	}
 
-	private static Style pvStyle(Style style, String name) {
-		Component tip = Component.translatable("betterpv.chat.click_pv", name);
-		return style
-			.withClickEvent(new ClickEvent.RunCommand("/pv " + name))
-			.withHoverEvent(new HoverEvent.ShowText(tip));
+	private static String normalizeCommand(String command) {
+		if (command == null) {
+			return null;
+		}
+		String t = command.trim();
+		if (t.startsWith("/")) {
+			t = t.substring(1);
+		}
+		return t.toLowerCase(Locale.ROOT);
 	}
 
-	private record NameRange(int start, int end, String name) {
+	private static Style pvStyle(Style style, String name) {
+		Component tip = Component.translatable("betterpv.chat.click_pv", name);
+		Style base = style == null ? Style.EMPTY : style;
+		return base
+			.withClickEvent(new ClickEvent.RunCommand("/pv " + name))
+			.withHoverEvent(new HoverEvent.ShowText(tip));
 	}
 }

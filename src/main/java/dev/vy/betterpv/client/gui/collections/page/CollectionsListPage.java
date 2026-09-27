@@ -3,6 +3,7 @@ package dev.vy.betterpv.client.gui.collections.page;
 import com.mojang.authlib.GameProfile;
 import com.google.gson.JsonObject;
 import dev.vy.betterpv.client.api.HypixelApiClient;
+import dev.vy.betterpv.client.cosmetics.CosmeticRenderer;
 import dev.vy.betterpv.client.cosmetics.PlayerCustomizationRegistry;
 import dev.vy.betterpv.client.data.BossCollections;
 import dev.vy.betterpv.client.data.CollectionSnapshot;
@@ -301,6 +302,7 @@ public final class CollectionsListPage {
 		CollectionSnapshot.Member member,
 		String name
 	) {
+		if (!CosmeticRenderer.active()) return null;
 		UUID uuid = HypixelApiClient.parseUndashedUuid(member.uuid());
 		if (uuid != null) {
 			PlayerCustomizationRegistry.PlayerCustomization byUuid =

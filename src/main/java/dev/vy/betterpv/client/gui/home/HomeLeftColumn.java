@@ -545,12 +545,11 @@ final class HomeLeftColumn {
 				styled.append(span.toComponent());
 			}
 		}
-		if (prefix.isEmpty() && playerRank != null && !nameAlreadyHasBracket) {
-			// No package rank - still use grey name from HypixelRanks when cosmetics did nothing special.
-			styled.append(namePart);
-		} else {
-			styled.append(namePart);
+		if (namePart == base && playerRank != null && !nameAlreadyHasBracket) {
+			// Cosmetics did nothing special, so use the HypixelRanks name colour (grey with no rank).
+			namePart = PvTooltip.Span.of(name == null ? "" : name, HypixelRanks.nameColor(playerRank)).toComponent();
 		}
+		styled.append(namePart);
 		this.cachedStyledNameKey = key;
 		this.cachedStyledName = styled;
 		this.cachedNameWidth = -1;

@@ -1,7 +1,6 @@
 package dev.vy.betterpv.client.gui;
 
 import com.mojang.authlib.GameProfile;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 import net.minecraft.client.Minecraft;
@@ -9,6 +8,7 @@ import net.minecraft.client.entity.ClientMannequin;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.PlayerSkinRenderCache;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
@@ -258,36 +258,32 @@ public final class PlayerModelRenderer {
 	}
 
 	private static final class GuiPlayer extends ClientMannequin {
-		private final Supplier<PlayerSkin> skinLookup;
-		private PlayerSkin skin;
+		private final Supplier<PlayerSkinRenderCache.RenderInfo> skinLookup;
 
 		private GuiPlayer(ClientLevel level, UUID uuid, String name) {
 			super(level, Minecraft.getInstance().playerSkinRenderCache());
 			setId(nextGuiEntityId--);
 			String safeName = name == null || name.isBlank() ? "Player" : name;
 			GameProfile profile = new GameProfile(uuid, safeName);
+			ResolvableProfile resolvable = ResolvableProfile.createUnresolved(uuid);
 			try {
-				setComponent(DataComponents.PROFILE, ResolvableProfile.createUnresolved(uuid));
+				setComponent(DataComponents.PROFILE, resolvable);
 			} catch (Throwable ignored) {
 				try {
 					setComponent(DataComponents.PROFILE, ResolvableProfile.createResolved(profile));
 				} catch (Throwable ignored2) {
 				}
 			}
-			this.skinLookup = Minecraft.getInstance().getSkinManager().createLookup(profile, true);
-			this.skin = DefaultPlayerSkin.get(uuid);
-			Minecraft.getInstance().getSkinManager().get(profile).thenAccept(optional -> {
-				Optional<PlayerSkin> resolved = optional;
-				if (resolved != null && resolved.isPresent()) {
-					this.skin = resolved.get();
-				}
-			});
+			// A bare GameProfile has no textures property, so SkinManager alone only ever gives the
+			// default skin, and ClientMannequin applies its own lookup in tick(), which GUI entities
+			// never get. The render cache fetches the textured profile off-thread and is shared.
+			this.skinLookup = Minecraft.getInstance().playerSkinRenderCache().createLookup(resolvable);
 		}
 
 		@Override
 		public PlayerSkin getSkin() {
-			PlayerSkin looked = this.skinLookup == null ? null : this.skinLookup.get();
-			return looked != null ? looked : (this.skin != null ? this.skin : DefaultPlayerSkin.get(getUUID()));
+			PlayerSkinRenderCache.RenderInfo info = this.skinLookup.get();
+			return info != null ? info.playerSkin() : DefaultPlayerSkin.get(getUUID());
 		}
 
 		@Override

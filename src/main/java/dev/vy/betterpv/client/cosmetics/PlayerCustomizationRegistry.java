@@ -43,6 +43,10 @@ public final class PlayerCustomizationRegistry {
 		return snapshot.nameplateDisplayCandidates;
 	}
 
+	public static List<NameCandidate> tabDisplayCandidates() {
+		return snapshot.tabDisplayCandidates;
+	}
+
 	public static List<NameCandidate> chatHeaderNameCandidates() {
 		return snapshot.chatHeaderNameCandidates;
 	}
@@ -98,6 +102,7 @@ public final class PlayerCustomizationRegistry {
 		Map<UUID, PlayerCustomization> byUuid = new LinkedHashMap<>();
 		List<NameCandidate> allNameCandidates = new ArrayList<>();
 		List<NameCandidate> nameplateDisplayCandidates = new ArrayList<>();
+		List<NameCandidate> tabDisplayCandidates = new ArrayList<>();
 		List<NameCandidate> chatHeaderNameCandidates = new ArrayList<>();
 		List<NameCandidate> styledNameCandidates = new ArrayList<>();
 		List<NameCandidate> gradientNameCandidates = new ArrayList<>();
@@ -118,6 +123,7 @@ public final class PlayerCustomizationRegistry {
 			allNameCandidates.addAll(exactCandidates);
 			if (customization.hasChatDisplayOverride()) {
 				nameplateDisplayCandidates.addAll(exactCandidates);
+				tabDisplayCandidates.addAll(unboundedExactCandidates(customization, names));
 				scoreboardDisplayNameCandidates.addAll(scoreboardCandidates(customization, names));
 			}
 			if (customization.hasChatHeaderDecorations()) {
@@ -135,6 +141,7 @@ public final class PlayerCustomizationRegistry {
 
 		ComparatorByCandidateLength.sort(allNameCandidates);
 		ComparatorByCandidateLength.sort(nameplateDisplayCandidates);
+		ComparatorByCandidateLength.sort(tabDisplayCandidates);
 		ComparatorByCandidateLength.sort(chatHeaderNameCandidates);
 		ComparatorByCandidateLength.sort(styledNameCandidates);
 		ComparatorByCandidateLength.sort(gradientNameCandidates);
@@ -149,6 +156,7 @@ public final class PlayerCustomizationRegistry {
 			Map.copyOf(byUuid),
 			List.copyOf(allNameCandidates),
 			List.copyOf(nameplateDisplayCandidates),
+			List.copyOf(tabDisplayCandidates),
 			List.copyOf(chatHeaderNameCandidates),
 			List.copyOf(styledNameCandidates),
 			List.copyOf(gradientNameCandidates),
@@ -169,12 +177,26 @@ public final class PlayerCustomizationRegistry {
 		return List.copyOf(candidates.values());
 	}
 
+	// Tab entries are already gated to the player's own profile, and Hypixel's tab names carry
+	// raw legacy codes ("§bName") that would fail a word-boundary check.
+	private static List<NameCandidate> unboundedExactCandidates(PlayerCustomization customization, List<String> names) {
+		Map<String, NameCandidate> candidates = new LinkedHashMap<>();
+		for (String raw : names) {
+			String name = raw == null ? "" : raw.trim();
+			if (name.isEmpty()) continue;
+			candidates.putIfAbsent(name.toLowerCase(Locale.ROOT), new NameCandidate(customization, name, false));
+		}
+		return List.copyOf(candidates.values());
+	}
+
 	private static List<NameCandidate> scoreboardCandidates(PlayerCustomization customization, List<String> names) {
 		Map<String, NameCandidate> candidates = new LinkedHashMap<>();
 		for (String raw : names) {
 			String name = raw == null ? "" : raw.trim();
 			if (name.isEmpty()) continue;
-			candidates.putIfAbsent("exact:" + name.toLowerCase(Locale.ROOT), new NameCandidate(customization, name, true));
+			// Team-formatted names can carry raw legacy codes ("§bName"), which fail a word-boundary
+			// check. Full names are specific enough here; only the shortened prefixes need boundaries.
+			candidates.putIfAbsent("exact:" + name.toLowerCase(Locale.ROOT), new NameCandidate(customization, name, false));
 			if (name.length() < 8) continue;
 
 			int minimumLength = Math.max(6, Math.max(name.length() - 4, (int) (name.length() * 0.7F)));
@@ -445,12 +467,13 @@ public final class PlayerCustomizationRegistry {
 
 	private record Snapshot(long version, List<PlayerCustomization> entries, Map<String, PlayerCustomization> byName,
 			Map<UUID, PlayerCustomization> byUuid, List<NameCandidate> allNameCandidates,
-			List<NameCandidate> nameplateDisplayCandidates, List<NameCandidate> chatHeaderNameCandidates,
+			List<NameCandidate> nameplateDisplayCandidates, List<NameCandidate> tabDisplayCandidates,
+			List<NameCandidate> chatHeaderNameCandidates,
 			List<NameCandidate> styledNameCandidates, List<NameCandidate> gradientNameCandidates,
 			List<NameCandidate> scoreboardDisplayNameCandidates, List<NameCandidate> scoreboardStyledNameCandidates,
 			List<NameCandidate> scoreboardGradientNameCandidates, boolean hasCapeCustomizations) {
 		static Snapshot empty() {
-			return new Snapshot(0L, List.of(), Map.of(), Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), false);
+			return new Snapshot(0L, List.of(), Map.of(), Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), false);
 		}
 	}
 

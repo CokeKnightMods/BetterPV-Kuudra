@@ -15,7 +15,7 @@ public abstract class PlayerTabOverlayCosmeticsMixin {
 	private void vypv$styleTabName(PlayerInfo playerInfo, CallbackInfoReturnable<Component> cir) {
 		if (playerInfo == null) return;
 		Component current = cir.getReturnValue();
-		Component styled = BetterPvCosmetics.styleDisplayName(current, playerInfo.getProfile());
+		Component styled = BetterPvCosmetics.styleTabDisplayName(current, playerInfo.getProfile());
 		if (styled != current) {
 			cir.setReturnValue(styled);
 		}

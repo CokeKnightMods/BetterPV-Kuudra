@@ -27,6 +27,12 @@ public final class HypixelRanks {
 		return out;
 	}
 
+	/** Name colour that goes with the rank bracket, grey for no rank. Same rule as {@link #nameSpans}. */
+	public static int nameColor(JsonObject player) {
+		List<PvTooltip.Span> prefix = prefixSpans(player);
+		return prefix.isEmpty() ? color(ChatFormatting.GRAY) : prefix.getFirst().color();
+	}
+
 	/** Rank bracket spans only (no player name), e.g. {@code [MVP+] }. Empty for default/none. */
 	public static List<PvTooltip.Span> prefixSpans(JsonObject player) {
 		if (player == null) {

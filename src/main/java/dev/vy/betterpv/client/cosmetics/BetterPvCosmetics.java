@@ -10,11 +10,17 @@ public final class BetterPvCosmetics {
 
 	public static void initialize() {
 		CosmeticsContentManager.initialize();
+		CosmeticRenderer.initialize();
 	}
 
 	public static Component styleDisplayName(Component current, GameProfile profile) {
 		if (current == null || !NameStyler.hasDisplayProfile(profile)) return current;
 		return NameStyler.applyNameplateDisplayDecorations(current);
+	}
+
+	public static Component styleTabDisplayName(Component current, GameProfile profile) {
+		if (current == null || !NameStyler.hasDisplayProfile(profile)) return current;
+		return NameStyler.applyTabDisplayDecorations(current);
 	}
 
 	public static Component styleMatchingNames(Component current) {
