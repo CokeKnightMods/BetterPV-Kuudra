@@ -34,6 +34,7 @@ public final class AuctionPage {
 	private static final int CREDIT_GAP = 5;
 
 	private AuctionSnapshot snapshot = AuctionSnapshot.empty();
+	private AuctionSnapshot appliedSource;
 	private int scroll;
 	private int maxScroll;
 	private int statsScroll;
@@ -56,6 +57,19 @@ public final class AuctionPage {
 	private AuctionSnapshot.Listing hoveredListing;
 
 	public void apply(AuctionSnapshot snapshot) {
+		// Every enrichment publish re-applies the same auctions; keep the Cofl-enriched copy.
+		if (snapshot != null && snapshot == this.appliedSource) {
+			return;
+		}
+		if (snapshot != null && this.snapshot.historyLoading() && !snapshot.historyLoading()
+			&& snapshot.playerUuid() != null && snapshot.playerUuid().equals(this.snapshot.playerUuid())) {
+			// Late Coflnet history for the same player: keep scroll and already-enriched listings.
+			this.appliedSource = snapshot;
+			this.snapshot = this.snapshot.withHistoryFrom(snapshot);
+			prefetchAndEnrich(this.snapshot);
+			return;
+		}
+		this.appliedSource = snapshot;
 		this.snapshot = snapshot == null ? AuctionSnapshot.empty() : snapshot;
 		this.scroll = 0;
 		this.statsScroll = 0;
@@ -396,7 +410,9 @@ public final class AuctionPage {
 		PvDraw.textScaled(g, font, credit, cx, footerY, PvDraw.COLOR_BORDER, CREDIT_SCALE);
 
 		if (listings.isEmpty()) {
-			String empty = Component.translatable("betterpv.auctions.empty").getString();
+			String empty = this.snapshot.historyLoading()
+				? "Loading…"
+				: Component.translatable("betterpv.auctions.empty").getString();
 			PvDraw.textCentered(
 				g, font, empty,
 				x + w / 2,

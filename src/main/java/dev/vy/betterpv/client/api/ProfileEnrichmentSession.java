@@ -17,6 +17,7 @@ import dev.vy.betterpv.client.data.FormatUtil;
 import dev.vy.betterpv.client.data.GardenSnapshot;
 import dev.vy.betterpv.client.data.InventorySnapshot;
 import dev.vy.betterpv.client.data.MiningSnapshot;
+import dev.vy.betterpv.client.data.MuseumCache;
 import dev.vy.betterpv.client.data.PetSnapshot;
 import dev.vy.betterpv.client.data.PlayerStatsCalculator;
 import dev.vy.betterpv.client.data.PlayerStatsSnapshot;
@@ -31,6 +32,7 @@ import dev.vy.betterpv.client.networth.NetworthMode;
 import dev.vy.betterpv.client.price.ItemPricer;
 import java.util.ArrayDeque;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -58,6 +60,7 @@ final class ProfileEnrichmentSession {
 		BESTIARY,
 		EVENTS,
 		AUCTIONS,
+		AUCTION_HISTORY,
 		MUSEUM,
 		NETWORTH
 	}
@@ -97,7 +100,6 @@ final class ProfileEnrichmentSession {
 	private final Consumer<ProfileFetcher.LoadedProfile> onUpdate;
 	private final Executor executor;
 
-	private final CompletableFuture<Optional<JsonObject>> museumFut;
 	private final CompletableFuture<Optional<JsonObject>> electionFut;
 	private final CompletableFuture<Optional<JsonObject>> auctionFut;
 	private final CompletableFuture<Optional<JsonArray>> soldFut;
@@ -106,6 +108,8 @@ final class ProfileEnrichmentSession {
 	private ProfileFetcher.LoadedProfile current;
 	private Map<String, List<InventoryDecoder.Stack>> inventoryCategories = Map.of();
 	private volatile boolean cancelled;
+	/** Guarded by {@link #lock}; false once the loop has drained the queue. */
+	private boolean running = true;
 
 	ProfileEnrichmentSession(
 		ProfileFetcher.LoadedProfile core,
@@ -114,7 +118,6 @@ final class ProfileEnrichmentSession {
 		JsonObject best,
 		JsonObject members,
 		JsonObject member,
-		CompletableFuture<Optional<JsonObject>> museumFut,
 		CompletableFuture<Optional<JsonObject>> electionFut,
 		CompletableFuture<Optional<JsonObject>> auctionFut,
 		CompletableFuture<Optional<JsonArray>> soldFut,
@@ -132,7 +135,6 @@ final class ProfileEnrichmentSession {
 		this.member = member;
 		this.profileId = core.profileId();
 		this.undashed = HypixelApiClient.undashed(this.uuid);
-		this.museumFut = museumFut;
 		this.electionFut = electionFut;
 		this.auctionFut = auctionFut;
 		this.soldFut = soldFut;
@@ -161,17 +163,54 @@ final class ProfileEnrichmentSession {
 			if (this.done.contains(job) || this.started.contains(job)) {
 				return;
 			}
+			// Dependencies go in front of the requested job, so add the job first.
+			this.pending.remove(job);
+			this.pending.addFirst(job);
+			if (job == Job.MINING && !this.done.contains(Job.COLLECTIONS) && !this.started.contains(Job.COLLECTIONS)) {
+				this.pending.remove(Job.COLLECTIONS);
+				this.pending.addFirst(Job.COLLECTIONS);
+			}
 			// Inventory decode is required before several tabs; pull it forward too.
 			if (job != Job.INVENTORY && !this.done.contains(Job.INVENTORY) && !this.started.contains(Job.INVENTORY)) {
 				this.pending.remove(Job.INVENTORY);
 				this.pending.addFirst(Job.INVENTORY);
 			}
-			if (job == Job.MINING && !this.done.contains(Job.COLLECTIONS) && !this.started.contains(Job.COLLECTIONS)) {
-				this.pending.remove(Job.COLLECTIONS);
-				this.pending.addFirst(Job.COLLECTIONS);
+		}
+	}
+
+	boolean matches(UUID uuid, String profileId) {
+		return this.uuid != null && this.uuid.equals(uuid)
+			&& this.profileId != null && this.profileId.equals(profileId);
+	}
+
+	/** Re-runs networth after museum data arrives. False when the loop has already finished. */
+	boolean requeueNetworth() {
+		synchronized (this.lock) {
+			if (!this.running || this.cancelled) {
+				return false;
+			}
+			this.done.remove(Job.NETWORTH);
+			this.started.remove(Job.NETWORTH);
+			this.pending.remove(Job.NETWORTH);
+			this.pending.addFirst(Job.NETWORTH);
+			return true;
+		}
+	}
+
+	/** Queues a job that became runnable later, restarting the loop if it already drained. */
+	private void enqueueLate(Job job) {
+		boolean restart;
+		synchronized (this.lock) {
+			if (this.cancelled) {
+				return;
 			}
 			this.pending.remove(job);
-			this.pending.addFirst(job);
+			this.pending.addLast(job);
+			restart = !this.running;
+			this.running = true;
+		}
+		if (restart) {
+			this.executor.execute(this::runLoop);
 		}
 	}
 
@@ -199,6 +238,8 @@ final class ProfileEnrichmentSession {
 	}
 
 	private void runLoop() {
+		long sessionStartedNanos = System.nanoTime();
+		boolean drained = false;
 		try {
 			while (!this.cancelled) {
 				Job next;
@@ -206,13 +247,24 @@ final class ProfileEnrichmentSession {
 					next = this.pending.pollFirst();
 					if (next != null) {
 						this.started.add(next);
+					} else {
+						this.running = false;
 					}
 				}
 				if (next == null) {
+					drained = true;
 					break;
 				}
+				long jobStartedNanos = System.nanoTime();
 				try {
 					runJob(next);
+					BetterPV.LOGGER.info(
+						"[PV timing] {} job {} took {}ms (at {}ms)",
+						this.name,
+						next,
+						(System.nanoTime() - jobStartedNanos) / 1_000_000L,
+						(System.nanoTime() - sessionStartedNanos) / 1_000_000L
+					);
 				} catch (RuntimeException exception) {
 					// Soft or hard: keep enriching other tabs. Core is already on screen;
 					// aborting the session would strand the rest of the viewer empty.
@@ -223,6 +275,13 @@ final class ProfileEnrichmentSession {
 				}
 			}
 		} finally {
+			// A drained loop already cleared running under the lock; clearing it again here
+			// could hide a loop that enqueueLate restarted in between.
+			if (!drained) {
+				synchronized (this.lock) {
+					this.running = false;
+				}
+			}
 			ProfileFetcher.clearActiveEnrichment(this);
 		}
 	}
@@ -242,6 +301,7 @@ final class ProfileEnrichmentSession {
 			case BESTIARY -> runBestiary();
 			case EVENTS -> runEvents();
 			case AUCTIONS -> runAuctions();
+			case AUCTION_HISTORY -> runAuctionHistory();
 			case MUSEUM -> runMuseum();
 			case NETWORTH -> runNetworth();
 		}
@@ -496,14 +556,29 @@ final class ProfileEnrichmentSession {
 		));
 	}
 
+	// Active listings come from Vyriv in ~200ms; Coflnet history can take seconds, so it
+	// joins later as its own job instead of holding the loop.
 	private void runAuctions() {
+		boolean historyReady = this.soldFut.isDone() && this.bidsFut.isDone();
+		publishAuctions(historyReady);
+		if (!historyReady) {
+			CompletableFuture.allOf(this.soldFut, this.bidsFut)
+				.whenComplete((ignored, error) -> enqueueLate(Job.AUCTION_HISTORY));
+		}
+	}
+
+	private void runAuctionHistory() {
+		publishAuctions(true);
+	}
+
+	private void publishAuctions(boolean withHistory) {
 		AuctionSnapshot auctions = AuctionSnapshot.build(
 			this.uuid,
 			joinOptional(this.auctionFut, "auctions").orElse(null),
-			joinOptional(this.soldFut, "sold auctions").orElse(null),
-			joinOptional(this.bidsFut, "auction bids").orElse(null)
+			withHistory ? joinOptional(this.soldFut, "sold auctions").orElse(null) : null,
+			withHistory ? joinOptional(this.bidsFut, "auction bids").orElse(null) : null
 		);
-		auctions = auctions.withStats(AuctionSnapshot.Stats.fromMember(this.member));
+		auctions = auctions.withStats(AuctionSnapshot.Stats.fromMember(this.member)).withHistoryLoading(!withHistory);
 		publish(merge(
 			this.current,
 			null, null, null, auctions, null, null, null, null, null, null,
@@ -513,8 +588,10 @@ final class ProfileEnrichmentSession {
 	}
 
 	private void runMuseum() {
-		JsonObject museumRoot = joinOptional(this.museumFut, "museum").orElse(null);
-		JsonObject museumMember = ProfileFetcher.findMuseumMemberPublic(museumRoot, this.profileId, this.undashed);
+		JsonObject museumMember = cachedMuseumMember();
+		if (museumMember == null) {
+			return;
+		}
 		publish(merge(
 			this.current,
 			null, null, null, null, null, null, null, null, null, null,
@@ -524,18 +601,19 @@ final class ProfileEnrichmentSession {
 	}
 
 	private void runNetworth() {
+		long startedNanos = System.nanoTime();
 		ensureInventoryCategories();
-		JsonObject museumRoot = joinOptional(this.museumFut, "museum").orElse(null);
-		JsonObject museumMember = this.current.museumMember() != null
-			? this.current.museumMember()
-			: ProfileFetcher.findMuseumMemberPublic(museumRoot, this.profileId, this.undashed);
-		Map<String, List<InventoryDecoder.Stack>> categories =
-			InventoryDecoder.parseCategories(this.member, museumMember);
+		long decodedNanos = System.nanoTime();
+		JsonObject museumMember = cachedMuseumMember();
+		Map<String, List<InventoryDecoder.Stack>> categories = new LinkedHashMap<>(this.inventoryCategories);
+		categories.put("museum", InventoryDecoder.parseMuseum(museumMember));
 		this.inventoryCategories = categories;
+		long museumParsedNanos = System.nanoTime();
 
 		if (!ItemPricer.isReady()) {
 			ItemPricer.awaitReady(1_500L);
 		}
+		long pricesNanos = System.nanoTime();
 		boolean pricesReady = ItemPricer.isReady();
 		NetworthBreakdown normal = pricesReady
 			? NetworthCalculator.calculate(this.member, this.best, museumMember, categories, NetworthMode.NORMAL)
@@ -551,6 +629,17 @@ final class ProfileEnrichmentSession {
 				this.member, this.best, museumMember, categories, NetworthMode.UNSOULBOUND_NON_COSMETIC
 			)
 			: NetworthBreakdown.empty("Loading networth");
+
+		long calcNanos = System.nanoTime();
+		BetterPV.LOGGER.info(
+			"[PV timing] {} networth split decode={}ms museum={} museumParse={}ms pricesWait={}ms calc={}ms",
+			this.name,
+			(decodedNanos - startedNanos) / 1_000_000L,
+			museumMember == null ? "none" : "cached",
+			(museumParsedNanos - decodedNanos) / 1_000_000L,
+			(pricesNanos - museumParsedNanos) / 1_000_000L,
+			(calcNanos - pricesNanos) / 1_000_000L
+		);
 
 		String nwText = !pricesReady
 			? "…"
@@ -568,6 +657,12 @@ final class ProfileEnrichmentSession {
 				next, this.member, this.best, museumMember, categories, this.onUpdate
 			);
 		}
+	}
+
+	// Museum is only ever fetched by the Museum tab; /pv and networth just reuse what it cached.
+	private JsonObject cachedMuseumMember() {
+		MuseumCache.Entry entry = MuseumCache.get(this.uuid, this.profileId);
+		return entry != null ? entry.museumMember() : this.current.museumMember();
 	}
 
 	private void ensureInventoryCategories() {

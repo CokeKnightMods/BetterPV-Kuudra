@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.vy.betterpv.BetterPV;
 import dev.vy.betterpv.client.api.BetterPvSessionAuth;
+import dev.vy.betterpv.client.api.HypixelApiClient;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -22,7 +23,7 @@ public final class HypixelItemsCache {
 	private static final URI ITEMS_URI = URI.create("https://api.vyriv.dev/hypixel/resources/skyblock/items");
 	private static final Duration TIMEOUT = Duration.ofSeconds(20);
 	private static final long REFRESH_HOURS = 12L;
-	private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+	private static final HttpClient HTTP = HypixelApiClient.http();
 	private static final ScheduledExecutorService EXECUTOR = Executors.newSingleThreadScheduledExecutor(r -> {
 		Thread t = new Thread(r, "BetterPV-HypixelItems");
 		t.setDaemon(true);

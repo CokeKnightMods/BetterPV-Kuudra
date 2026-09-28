@@ -421,6 +421,7 @@ final class ProfileScreenDataLoader {
 					int itemCount = member.entrySet().size();
 					MuseumCache.put(uuid, id, member, itemCount);
 					this.screen.museumPage().applyMuseum(member);
+					ProfileFetcher.museumLoaded(uuid, id, member);
 				} catch (Exception exception) {
 					BetterPV.LOGGER.warn("Museum parse failed for {}", id, exception);
 					this.screen.museumPage().applyError("Museum parse failed");

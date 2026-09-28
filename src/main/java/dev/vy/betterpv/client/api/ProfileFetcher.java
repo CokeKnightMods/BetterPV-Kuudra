@@ -46,12 +46,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
+import com.mojang.authlib.GameProfile;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.world.item.ItemStack;
 
 public final class ProfileFetcher {
 	/** Match worker profiles cache TTL (5 minutes). */
 	private static final long CACHE_TTL_MS = 5L * 60L * 1000L;
 	private static final ConcurrentHashMap<String, CacheEntry> CACHE = new ConcurrentHashMap<>();
+	private static final Pattern MINECRAFT_NAME = Pattern.compile("[A-Za-z0-9_]{1,16}");
 	/** Post-core enrichment / profile-switch parsing (bounded; avoids parse-pool deadlock). */
 	private static final ExecutorService ENRICH_EXECUTOR = Executors.newFixedThreadPool(3, r -> {
 		Thread t = new Thread(r, "BetterPV-Enrich");
@@ -60,6 +65,7 @@ public final class ProfileFetcher {
 	});
 	private static final Object ACTIVE_ENRICH_LOCK = new Object();
 	private static volatile ProfileEnrichmentSession activeEnrichment;
+	private static volatile dev.vy.betterpv.client.gui.nav.PvTab requestedTab;
 
 	private ProfileFetcher() {
 	}
@@ -240,7 +246,14 @@ public final class ProfileFetcher {
 			BetterPV.LOGGER.info("Profile cache hit for {}", cleaned);
 			return CompletableFuture.completedFuture(cached);
 		}
-		return HypixelApiClient.resolveUuid(cleaned).thenCompose(uuidOpt -> {
+		long startedNanos = System.nanoTime();
+		CompletableFuture<Optional<String>> authFut = BetterPvSessionAuth.bearerTokenAsync();
+		HypixelApiClient.UuidName local = localUuid(cleaned);
+		CompletableFuture<Optional<HypixelApiClient.UuidName>> uuidFut = local != null
+			? CompletableFuture.completedFuture(Optional.of(local))
+			: HypixelApiClient.resolveUuid(cleaned);
+		return uuidFut.thenCompose(uuidOpt -> {
+			logStage(cleaned, local != null ? "uuid local" : "uuid", startedNanos);
 			if (uuidOpt.isEmpty()) {
 				return CompletableFuture.completedFuture(fail(cleaned, "Player not found"));
 			}
@@ -253,64 +266,122 @@ public final class ProfileFetcher {
 				return CompletableFuture.completedFuture(byUuid);
 			}
 
-			return CompletableFuture
-				.supplyAsync(BetterPvSessionAuth::ensureBearerToken, HypixelApiClient.networkExecutor())
-				.thenCompose(ignored -> HypixelApiClient.skyblockProfiles(id.uuid()).thenCompose(profilesOpt -> {
-						if (profilesOpt.isEmpty()) {
-							String authMessage = BetterPvSessionAuth.userFacingFailure()
-								.orElse("Profiles request failed");
-							BetterPvSessionAuth.notifyPlayerIfNeeded();
-							return CompletableFuture.completedFuture(fail(id.name(), authMessage));
+			return authFut
+				.thenCompose(ignored -> {
+					logStage(cleaned, "auth", startedNanos);
+					return HypixelApiClient.skyblockProfiles(id.uuid());
+				})
+				.thenCompose(profilesOpt -> {
+					logStage(cleaned, "profiles", startedNanos);
+					if (profilesOpt.isEmpty()) {
+						String authMessage = BetterPvSessionAuth.userFacingFailure()
+							.orElse("Profiles request failed");
+						BetterPvSessionAuth.notifyPlayerIfNeeded();
+						return CompletableFuture.completedFuture(fail(id.name(), authMessage));
+					}
+					JsonObject root = profilesOpt.get();
+					logProfileShape(cleaned, root);
+					CompletableFuture<Optional<JsonObject>> electionFut =
+						HypixelApiClient.skyblockElection();
+					PlayerAuctionFutures auctionFuts = playerAuctionFutures(id.uuid());
+					CompletableFuture<Optional<JsonObject>> auctionFut = auctionFuts.auction();
+					CompletableFuture<Optional<JsonArray>> soldFut = auctionFuts.sold();
+					CompletableFuture<Optional<JsonArray>> bidsFut = auctionFuts.bids();
+
+					CompletableFuture<LoadedProfile> coreFuture = CompletableFuture.supplyAsync(
+						() -> ProfileHomeParser.parseHomeCore(id.name(), id.uuid(), root),
+						HypixelApiClient.parseExecutor()
+					);
+
+					coreFuture.thenAccept(core -> {
+						logStage(cleaned, "core parsed", startedNanos);
+						if (core != null && core.ok()) {
+							// Cache core immediately so a quick second /pv is warm for first paint.
+							putCache(uuidKey(id.uuid()), core);
+							putCache(nameKey(id.name()), core);
+							putCache(nameKey(cleaned), core);
+							startProgressiveEnrichment(
+								core,
+								nameKey(cleaned),
+								root,
+								electionFut,
+								auctionFut,
+								soldFut,
+								bidsFut,
+								onUpdate
+							);
 						}
-						JsonObject root = profilesOpt.get();
-						JsonObject best = ProfileCoopIndex.selectedProfile(root);
-						String profileId = best != null && best.has("profile_id")
-							? best.get("profile_id").getAsString()
-							: null;
-						CompletableFuture<Optional<JsonObject>> museumFut =
-							HypixelApiClient.skyblockMuseum(id.uuid(), profileId);
-						CompletableFuture<Optional<JsonObject>> electionFut =
-							HypixelApiClient.skyblockElection();
-						CompletableFuture<Optional<JsonObject>> auctionFut =
-							HypixelApiClient.skyblockAuction(id.uuid());
-						CompletableFuture<Optional<JsonArray>> soldFut =
-							CoflnetApiClient.playerAuctions(id.uuid(), 0);
-						CompletableFuture<Optional<JsonArray>> bidsFut =
-							CoflnetApiClient.playerBids(id.uuid(), 0);
-
-						CompletableFuture<LoadedProfile> coreFuture = CompletableFuture.supplyAsync(
-							() -> ProfileHomeParser.parseHomeCore(id.name(), id.uuid(), root),
-							HypixelApiClient.parseExecutor()
-						);
-
-						coreFuture.thenAccept(core -> {
-							if (core != null && core.ok()) {
-								// Cache core immediately so a quick second /pv is warm for first paint.
-								putCache(uuidKey(id.uuid()), core);
-								putCache(nameKey(id.name()), core);
-								putCache(nameKey(cleaned), core);
-								startProgressiveEnrichment(
-									core,
-									nameKey(cleaned),
-									root,
-									museumFut,
-									electionFut,
-									auctionFut,
-									soldFut,
-									bidsFut,
-									onUpdate
-								);
-							}
-						});
-						return coreFuture;
-					}));
+					});
+					return coreFuture;
+				});
 		});
+	}
+
+	// Skips the Mojang lookup when the client already knows the player. Tab entries are
+	// only trusted for real accounts (version 4 UUIDs); Hypixel NPCs and fake tab rows
+	// use version 2.
+	private static HypixelApiClient.UuidName localUuid(String name) {
+		Minecraft client = Minecraft.getInstance();
+		if (client == null || !client.isSameThread() || !MINECRAFT_NAME.matcher(name).matches()) {
+			return null;
+		}
+		GameProfile profile = null;
+		if (client.player != null && name.equalsIgnoreCase(client.player.getGameProfile().name())) {
+			profile = client.player.getGameProfile();
+		} else if (client.getConnection() != null) {
+			PlayerInfo info = client.getConnection().getPlayerInfoIgnoreCase(name);
+			if (info != null && info.getProfile().id() != null && info.getProfile().id().version() == 4) {
+				profile = info.getProfile();
+			}
+		}
+		if (profile == null || profile.id() == null || !name.equalsIgnoreCase(profile.name())) {
+			return null;
+		}
+		return new HypixelApiClient.UuidName(profile.id(), profile.name());
+	}
+
+	private static void logProfileShape(String name, JsonObject root) {
+		JsonArray profiles = root.has("profiles") && root.get("profiles").isJsonArray()
+			? root.getAsJsonArray("profiles")
+			: new JsonArray();
+		int totalMembers = 0;
+		int selectedMembers = 0;
+		StringBuilder perProfile = new StringBuilder();
+		for (var element : profiles) {
+			if (!element.isJsonObject()) {
+				continue;
+			}
+			JsonObject profile = element.getAsJsonObject();
+			int members = profile.has("members") && profile.get("members").isJsonObject()
+				? profile.getAsJsonObject("members").size()
+				: 0;
+			totalMembers += members;
+			boolean selected = profile.has("selected") && profile.get("selected").isJsonPrimitive()
+				&& profile.get("selected").getAsBoolean();
+			if (selected) {
+				selectedMembers = members;
+			}
+			if (!perProfile.isEmpty()) {
+				perProfile.append(',');
+			}
+			perProfile.append(members).append(selected ? "*" : "");
+		}
+		BetterPV.LOGGER.info(
+			"[PV timing] {} shape profiles={} members={} selectedMembers={} perProfile=[{}]",
+			name, profiles.size(), totalMembers, selectedMembers, perProfile
+		);
+	}
+
+	static void logStage(String name, String stage, long startedNanos) {
+		BetterPV.LOGGER.info("[PV timing] {} {} at {}ms", name, stage, (System.nanoTime() - startedNanos) / 1_000_000L);
 	}
 
 	/**
 	 * Prefer loading the clicked tab next while background enrichment is still running.
 	 */
 	public static void prioritizeTab(dev.vy.betterpv.client.gui.nav.PvTab tab) {
+		// The screen asks before its session exists, so remember it for the next session too.
+		requestedTab = tab;
 		ProfileEnrichmentSession session = activeEnrichment;
 		if (session != null) {
 			session.prioritize(tab);
@@ -360,11 +431,49 @@ public final class ProfileFetcher {
 		scheduleNetworthRefresh(base, member, profile, museumMember, inventoryCategories, onUpdate);
 	}
 
+	/**
+	 * Called after the Museum tab fetched museum data, so networth can include it
+	 * without /pv ever requesting museum itself.
+	 */
+	public static void museumLoaded(UUID uuid, String profileId, JsonObject museumMember) {
+		if (uuid == null || profileId == null || museumMember == null) {
+			return;
+		}
+		ProfileEnrichmentSession session = activeEnrichment;
+		if (session != null && session.matches(uuid, profileId) && session.requeueNetworth()) {
+			return;
+		}
+		LoadedProfile base = getCached(uuidKey(uuid));
+		if (base == null || !profileId.equals(base.profileId()) || base.profilesRoot() == null) {
+			return;
+		}
+		CompletableFuture.runAsync(() -> {
+			JsonObject root = base.profilesRoot();
+			JsonArray profiles = root.has("profiles") && root.get("profiles").isJsonArray()
+				? root.getAsJsonArray("profiles")
+				: null;
+			JsonObject profile = ProfileCoopIndex.pickProfile(profiles, profileId);
+			if (profile == null) {
+				return;
+			}
+			JsonObject members = profile.has("members") && profile.get("members").isJsonObject()
+				? profile.getAsJsonObject("members")
+				: null;
+			JsonObject member = ProfileMuseumLookup.findMember(members, HypixelApiClient.undashed(uuid));
+			if (member == null) {
+				return;
+			}
+			Map<String, List<InventoryDecoder.Stack>> categories = InventoryDecoder.withSharedDecode(
+				() -> InventoryDecoder.parseCategories(member, museumMember)
+			);
+			scheduleNetworthRefresh(base, member, profile, museumMember, categories, null);
+		}, ENRICH_EXECUTOR);
+	}
+
 	private static void startProgressiveEnrichment(
 		LoadedProfile core,
 		String cleanedNameKey,
 		JsonObject root,
-		CompletableFuture<Optional<JsonObject>> museumFut,
 		CompletableFuture<Optional<JsonObject>> electionFut,
 		CompletableFuture<Optional<JsonObject>> auctionFut,
 		CompletableFuture<Optional<JsonArray>> soldFut,
@@ -393,7 +502,6 @@ public final class ProfileFetcher {
 			best,
 			members,
 			member,
-			museumFut,
 			electionFut,
 			auctionFut,
 			soldFut,
@@ -406,6 +514,10 @@ public final class ProfileFetcher {
 				activeEnrichment.cancel();
 			}
 			activeEnrichment = session;
+		}
+		dev.vy.betterpv.client.gui.nav.PvTab tab = requestedTab;
+		if (tab != null) {
+			session.prioritize(tab);
 		}
 		session.start();
 	}
@@ -429,17 +541,15 @@ public final class ProfileFetcher {
 			if (core == null || !core.ok()) {
 				return;
 			}
-			String pid = core.profileId();
-			CompletableFuture<Optional<JsonObject>> museumFut = HypixelApiClient.skyblockMuseum(uuid, pid);
 			CompletableFuture<Optional<JsonObject>> electionFut = HypixelApiClient.skyblockElection();
-			CompletableFuture<Optional<JsonObject>> auctionFut = HypixelApiClient.skyblockAuction(uuid);
-			CompletableFuture<Optional<JsonArray>> soldFut = CoflnetApiClient.playerAuctions(uuid, 0);
-			CompletableFuture<Optional<JsonArray>> bidsFut = CoflnetApiClient.playerBids(uuid, 0);
+			PlayerAuctionFutures auctionFuts = playerAuctionFutures(uuid);
+			CompletableFuture<Optional<JsonObject>> auctionFut = auctionFuts.auction();
+			CompletableFuture<Optional<JsonArray>> soldFut = auctionFuts.sold();
+			CompletableFuture<Optional<JsonArray>> bidsFut = auctionFuts.bids();
 			startProgressiveEnrichment(
 				core,
 				nameKey(name),
 				root,
-				museumFut,
 				electionFut,
 				auctionFut,
 				soldFut,
@@ -448,6 +558,41 @@ public final class ProfileFetcher {
 			);
 		});
 		return coreFuture;
+	}
+
+	// Hypixel auctions and Cofl history are per player, not per profile, so profile
+	// switches reuse the last player's requests instead of fetching them again.
+	private record PlayerAuctionFutures(
+		UUID uuid,
+		long createdAtMillis,
+		CompletableFuture<Optional<JsonObject>> auction,
+		CompletableFuture<Optional<JsonArray>> sold,
+		CompletableFuture<Optional<JsonArray>> bids
+	) {
+	}
+
+	private static volatile PlayerAuctionFutures lastAuctionFutures;
+
+	private static PlayerAuctionFutures playerAuctionFutures(UUID uuid) {
+		long now = System.currentTimeMillis();
+		PlayerAuctionFutures last = lastAuctionFutures;
+		if (last != null
+			&& last.uuid().equals(uuid)
+			&& now - last.createdAtMillis() < CACHE_TTL_MS
+			&& !HypixelApiClient.failed(last.auction())
+			&& !HypixelApiClient.failed(last.sold())
+			&& !HypixelApiClient.failed(last.bids())) {
+			return last;
+		}
+		PlayerAuctionFutures next = new PlayerAuctionFutures(
+			uuid,
+			now,
+			HypixelApiClient.skyblockAuction(uuid),
+			CoflnetApiClient.playerAuctions(uuid, 0),
+			CoflnetApiClient.playerBids(uuid, 0)
+		);
+		lastAuctionFutures = next;
+		return next;
 	}
 
 	private static String nameKey(String name) {
@@ -916,7 +1061,7 @@ public final class ProfileFetcher {
 					base.bestiary(),
 					base.events(),
 					base.misc(),
-					base.museumMember(),
+					museumMember != null ? museumMember : base.museumMember(),
 					base.profileId(),
 					base.profilesRoot(),
 					base.profiles(),

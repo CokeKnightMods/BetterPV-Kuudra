@@ -196,6 +196,10 @@ public final class InventoryDecoder {
 		return categories;
 	}
 
+	public static List<Stack> parseMuseum(JsonObject museumMember) {
+		return MuseumInventoryDecoder.parseMuseum(museumMember);
+	}
+
 	public static Map<String, Stack> parseMuseumById(JsonObject museumMember) {
 		return MuseumInventoryDecoder.parseMuseumById(museumMember);
 	}

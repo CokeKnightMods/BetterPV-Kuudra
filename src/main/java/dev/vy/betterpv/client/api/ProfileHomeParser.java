@@ -70,7 +70,10 @@ final class ProfileHomeParser {
 		String preferredProfileId
 	) {
 		try {
-			return parseHomeCoreUnsafe(name, uuid, root, preferredProfileId);
+			// Home gear, stats and armor each decode the same inventory fields.
+			return InventoryDecoder.withSharedDecode(
+				() -> parseHomeCoreUnsafe(name, uuid, root, preferredProfileId)
+			);
 		} catch (RuntimeException exception) {
 			if (!SoftDataFailure.isSoft(exception)) {
 				throw exception;

@@ -20,6 +20,8 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.User;
@@ -39,7 +41,7 @@ public final class BetterPvSessionAuth {
 	private static final URI AUTH_URI = URI.create("https://api.vyriv.dev/hypixel/auth");
 	private static final Duration TIMEOUT = Duration.ofSeconds(12);
 	private static final long REFRESH_SKEW_MILLIS = 60_000L;
-	private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+	private static final HttpClient HTTP = HypixelApiClient.http();
 	private static final SecureRandom RANDOM = new SecureRandom();
 	private static final Object LOCK = new Object();
 	private static final ExecutorService AUTH_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
@@ -48,8 +50,16 @@ public final class BetterPvSessionAuth {
 		return t;
 	});
 
+	private static final long REFRESH_WHILE_USED_MILLIS = 30L * 60L * 1000L;
+	private static final ScheduledExecutorService REFRESH_SCHEDULER = Executors.newSingleThreadScheduledExecutor(r -> {
+		Thread t = new Thread(r, "BetterPV-SessionAuthRefresh");
+		t.setDaemon(true);
+		return t;
+	});
+
 	private static volatile String cachedJwt;
 	private static volatile long expiresAtMillis;
+	private static volatile long lastUsedAtMillis;
 	private static CompletableFuture<Optional<String>> inFlight;
 	private static volatile Failure lastFailure = Failure.NONE;
 	private static volatile String lastFailureDetail = "";
@@ -198,8 +208,28 @@ public final class BetterPvSessionAuth {
 		}
 	}
 
+	/** Non-blocking; starts auth if needed so it can overlap other /pv requests. */
+	public static CompletableFuture<Optional<String>> bearerTokenAsync() {
+		lastUsedAtMillis = System.currentTimeMillis();
+		if (isUsable()) {
+			lastFailure = Failure.NONE;
+			return CompletableFuture.completedFuture(Optional.of(cachedJwt));
+		}
+		synchronized (LOCK) {
+			if (isUsable()) {
+				lastFailure = Failure.NONE;
+				return CompletableFuture.completedFuture(Optional.of(cachedJwt));
+			}
+			if (inFlight == null || inFlight.isDone()) {
+				inFlight = CompletableFuture.supplyAsync(BetterPvSessionAuth::authenticateOnce, AUTH_EXECUTOR);
+			}
+			return inFlight.exceptionally(error -> Optional.empty());
+		}
+	}
+
 	/** Blocking; call only from worker threads, never the render thread. */
 	public static Optional<String> ensureBearerToken() {
+		lastUsedAtMillis = System.currentTimeMillis();
 		if (isUsable()) {
 			lastFailure = Failure.NONE;
 			return Optional.of(cachedJwt);
@@ -226,6 +256,22 @@ public final class BetterPvSessionAuth {
 			lastFailure = Failure.AUTH_HTTP;
 			return Optional.empty();
 		}
+	}
+
+	// Renew shortly before the token goes stale so the next /pv doesn't wait on joinServer,
+	// but only while /pv is actually in use; idle clients shouldn't keep hitting Mojang.
+	private static void scheduleRefresh(long expiresInSeconds) {
+		long delayMillis = Math.max(30_000L, expiresInSeconds * 1000L - REFRESH_SKEW_MILLIS - 30_000L);
+		REFRESH_SCHEDULER.schedule(() -> {
+			if (System.currentTimeMillis() - lastUsedAtMillis > REFRESH_WHILE_USED_MILLIS) {
+				return;
+			}
+			synchronized (LOCK) {
+				if (inFlight == null || inFlight.isDone()) {
+					inFlight = CompletableFuture.supplyAsync(BetterPvSessionAuth::authenticateOnce, AUTH_EXECUTOR);
+				}
+			}
+		}, delayMillis, TimeUnit.MILLISECONDS);
 	}
 
 	private static boolean isUsable() {
@@ -328,6 +374,7 @@ public final class BetterPvSessionAuth {
 				cachedJwt = token;
 				expiresAtMillis = System.currentTimeMillis() + (expiresInSeconds * 1000L);
 			}
+			scheduleRefresh(expiresInSeconds);
 			setFailure(Failure.NONE, "");
 			return Optional.of(token);
 		} catch (IOException | InterruptedException exception) {

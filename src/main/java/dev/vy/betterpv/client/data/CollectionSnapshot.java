@@ -18,6 +18,7 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class CollectionSnapshot {
 	public record Member(
@@ -106,6 +107,7 @@ public final class CollectionSnapshot {
 	private final List<MinionEntry> minions;
 	private final ConcurrentHashMap<String, String> nameOverrides = new ConcurrentHashMap<>();
 	private final ConcurrentHashMap<String, JsonObject> playerRanks = new ConcurrentHashMap<>();
+	private final AtomicBoolean ranksRequested = new AtomicBoolean();
 
 	public CollectionSnapshot(
 		List<HypixelCollectionsCache.Category> categories,
@@ -286,8 +288,14 @@ public final class CollectionSnapshot {
 
 		CollectionSnapshot snapshot = new CollectionSnapshot(categories, memberList, viewed, minionEntries);
 		snapshot.resolveNamesAsync();
-		snapshot.resolveRanksAsync();
 		return snapshot;
+	}
+
+	/** Coop ranks cost one Hypixel request per member, so they load only once Collections is shown. */
+	public void requestMemberRanks() {
+		if (this.ranksRequested.compareAndSet(false, true)) {
+			resolveRanksAsync();
+		}
 	}
 
 	private void resolveNamesAsync() {

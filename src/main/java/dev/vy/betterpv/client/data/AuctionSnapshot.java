@@ -194,6 +194,8 @@ public final class AuctionSnapshot {
 	private final boolean soldHasMore;
 	private final boolean boughtHasMore;
 	private final String creditUrl;
+	/** Sold/bought come from Coflnet, which can lag seconds behind the active listings. */
+	private final boolean historyLoading;
 
 	public AuctionSnapshot(
 		UUID playerUuid,
@@ -206,6 +208,22 @@ public final class AuctionSnapshot {
 		boolean soldHasMore,
 		boolean boughtHasMore
 	) {
+		this(playerUuid, active, sold, bought, stats, soldPage, boughtPage, soldHasMore, boughtHasMore, false);
+	}
+
+	private AuctionSnapshot(
+		UUID playerUuid,
+		List<Listing> active,
+		List<Listing> sold,
+		List<Listing> bought,
+		Stats stats,
+		int soldPage,
+		int boughtPage,
+		boolean soldHasMore,
+		boolean boughtHasMore,
+		boolean historyLoading
+	) {
+		this.historyLoading = historyLoading;
 		this.playerUuid = playerUuid;
 		this.active = List.copyOf(active == null ? List.of() : active);
 		this.sold = List.copyOf(sold == null ? List.of() : sold);
@@ -271,6 +289,44 @@ public final class AuctionSnapshot {
 		return this.creditUrl;
 	}
 
+	public boolean historyLoading() {
+		return this.historyLoading;
+	}
+
+	public AuctionSnapshot withHistoryLoading(boolean loading) {
+		if (loading == this.historyLoading) {
+			return this;
+		}
+		return new AuctionSnapshot(
+			this.playerUuid,
+			this.active,
+			this.sold,
+			this.bought,
+			this.stats,
+			this.soldPage,
+			this.boughtPage,
+			this.soldHasMore,
+			this.boughtHasMore,
+			loading
+		);
+	}
+
+	/** Keeps this snapshot's active listings and stats, takes sold/bought from {@code other}. */
+	public AuctionSnapshot withHistoryFrom(AuctionSnapshot other) {
+		return new AuctionSnapshot(
+			this.playerUuid,
+			this.active,
+			other.sold,
+			other.bought,
+			this.stats,
+			other.soldPage,
+			other.boughtPage,
+			other.soldHasMore,
+			other.boughtHasMore,
+			other.historyLoading
+		);
+	}
+
 	public long totalCoins(Bucket bucket) {
 		long sum = 0L;
 		for (Listing listing : forBucket(bucket)) {
@@ -289,7 +345,8 @@ public final class AuctionSnapshot {
 			this.soldPage,
 			this.boughtPage,
 			this.soldHasMore,
-			this.boughtHasMore
+			this.boughtHasMore,
+			this.historyLoading
 		);
 	}
 
@@ -304,7 +361,8 @@ public final class AuctionSnapshot {
 			page,
 			this.boughtPage,
 			hasMore,
-			this.boughtHasMore
+			this.boughtHasMore,
+			this.historyLoading
 		);
 	}
 
@@ -319,7 +377,8 @@ public final class AuctionSnapshot {
 			this.soldPage,
 			page,
 			this.soldHasMore,
-			hasMore
+			hasMore,
+			this.historyLoading
 		);
 	}
 
@@ -365,7 +424,8 @@ public final class AuctionSnapshot {
 			this.soldPage,
 			this.boughtPage,
 			this.soldHasMore,
-			this.boughtHasMore
+			this.boughtHasMore,
+			this.historyLoading
 		);
 	}
 
@@ -398,7 +458,8 @@ public final class AuctionSnapshot {
 			this.soldPage,
 			this.boughtPage,
 			this.soldHasMore,
-			this.boughtHasMore
+			this.boughtHasMore,
+			this.historyLoading
 		);
 	}
 

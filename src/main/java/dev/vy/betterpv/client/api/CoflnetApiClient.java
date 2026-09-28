@@ -44,8 +44,9 @@ public final class CoflnetApiClient {
 	public static CompletableFuture<Optional<JsonArray>> playerAuctions(UUID uuid, int page) {
 		String id = HypixelApiClient.undashed(uuid);
 		int p = Math.max(0, page);
+		long queuedNanos = System.nanoTime();
 		return CompletableFuture.supplyAsync(
-			() -> getArray(BASE + "/player/" + id + "/auctions?page=" + p),
+			() -> getArray(BASE + "/player/" + id + "/auctions?page=" + p, queuedNanos),
 			EXECUTOR
 		);
 	}
@@ -54,8 +55,9 @@ public final class CoflnetApiClient {
 	public static CompletableFuture<Optional<JsonArray>> playerBids(UUID uuid, int page) {
 		String id = HypixelApiClient.undashed(uuid);
 		int p = Math.max(0, page);
+		long queuedNanos = System.nanoTime();
 		return CompletableFuture.supplyAsync(
-			() -> getArray(BASE + "/player/" + id + "/bids?page=" + p),
+			() -> getArray(BASE + "/player/" + id + "/bids?page=" + p, queuedNanos),
 			EXECUTOR
 		);
 	}
@@ -65,14 +67,15 @@ public final class CoflnetApiClient {
 			return CompletableFuture.completedFuture(Optional.empty());
 		}
 		String id = auctionId.replace("-", "").toLowerCase();
+		long queuedNanos = System.nanoTime();
 		return CompletableFuture.supplyAsync(
-			() -> getObject(BASE + "/auction/" + id),
+			() -> getObject(BASE + "/auction/" + id, queuedNanos),
 			EXECUTOR
 		);
 	}
 
-	private static Optional<JsonArray> getArray(String url) {
-		Optional<JsonElement> root = getJson(url);
+	private static Optional<JsonArray> getArray(String url, long queuedNanos) {
+		Optional<JsonElement> root = getJson(url, queuedNanos);
 		if (root.isEmpty()) {
 			return Optional.empty();
 		}
@@ -83,19 +86,31 @@ public final class CoflnetApiClient {
 		return Optional.empty();
 	}
 
-	private static Optional<JsonObject> getObject(String url) {
-		Optional<JsonElement> root = getJson(url);
+	private static Optional<JsonObject> getObject(String url, long queuedNanos) {
+		Optional<JsonElement> root = getJson(url, queuedNanos);
 		if (root.isEmpty() || !root.get().isJsonObject()) {
 			return Optional.empty();
 		}
 		return Optional.of(root.get().getAsJsonObject());
 	}
 
-	private static Optional<JsonElement> getJson(String url) {
+	private static Optional<JsonElement> getJson(String url, long queuedNanos) {
+		long dequeuedNanos = System.nanoTime();
 		waitForSlot();
+		long sentNanos = System.nanoTime();
 		try {
 			HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(TIMEOUT).GET().build();
 			HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+			BetterPV.LOGGER.info(
+				"[PV timing] Coflnet {} {}ms queue={}ms spacing={}ms http={}ms status={} chars={}",
+				url.substring(BASE.length()),
+				(System.nanoTime() - queuedNanos) / 1_000_000L,
+				(dequeuedNanos - queuedNanos) / 1_000_000L,
+				(sentNanos - dequeuedNanos) / 1_000_000L,
+				(System.nanoTime() - sentNanos) / 1_000_000L,
+				response.statusCode(),
+				response.body() == null ? 0 : response.body().length()
+			);
 			if (response.statusCode() < 200 || response.statusCode() >= 300
 				|| response.body() == null || response.body().isBlank()) {
 				BetterPV.LOGGER.warn("Coflnet {} → HTTP {}", url, response.statusCode());
@@ -103,7 +118,12 @@ public final class CoflnetApiClient {
 			}
 			return Optional.of(JsonParser.parseString(response.body()));
 		} catch (IOException | InterruptedException exception) {
-			BetterPV.LOGGER.warn("Coflnet request failed: {}", url, exception);
+			BetterPV.LOGGER.warn(
+				"Coflnet request failed after {}ms: {}",
+				(System.nanoTime() - sentNanos) / 1_000_000L,
+				url,
+				exception
+			);
 			if (exception instanceof InterruptedException) {
 				Thread.currentThread().interrupt();
 			}

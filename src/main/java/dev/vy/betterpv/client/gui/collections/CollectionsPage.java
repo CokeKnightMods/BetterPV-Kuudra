@@ -42,6 +42,7 @@ public final class CollectionsPage {
 		int screenW,
 		int screenH
 	) {
+		this.snapshot.requestMemberRanks();
 		if (sub == PvSubTab.COLLECTIONS_MINIONS) {
 			this.minions.render(this.snapshot, g, font, x, y, w, h, mouseX, mouseY);
 		} else {

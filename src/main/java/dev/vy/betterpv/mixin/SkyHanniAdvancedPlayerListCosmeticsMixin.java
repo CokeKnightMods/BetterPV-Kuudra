@@ -52,7 +52,7 @@ public abstract class SkyHanniAdvancedPlayerListCosmeticsMixin {
 		Object value = args.get(2);
 		if (!(value instanceof Component current)) return;
 
-		Component styled = NameStyler.applyNameplateDisplayDecorations(current);
+		Component styled = NameStyler.applyTabDisplayDecorations(current);
 		if (styled != current) {
 			args.set(2, styled);
 		}

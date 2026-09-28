@@ -3,10 +3,15 @@ package dev.vy.betterpv.client.api;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
 import dev.vy.betterpv.BetterPV;
 import dev.vy.betterpv.client.data.SoftDataFailure;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -21,17 +26,25 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.zip.GZIPInputStream;
 
 public final class HypixelApiClient {
 	private static final String WORKER_BASE = "https://api.vyriv.dev";
 	private static final URI MOJANG_PROFILE = URI.create("https://api.mojang.com/users/profiles/minecraft/");
 	private static final URI MOJANG_SESSION = URI.create("https://sessionserver.mojang.com/session/minecraft/profile/");
 	private static final Duration TIMEOUT = Duration.ofSeconds(12);
+	private static final Duration UUID_LOOKUP_TIMEOUT = Duration.ofSeconds(5);
+	// The server may try two Mojang endpoints before answering from an older entry.
+	private static final Duration SERVER_UUID_TIMEOUT = Duration.ofSeconds(8);
+	private static final long DISK_UUID_RECHECK_MS = TimeUnit.DAYS.toMillis(1);
 	private static final long SPACING_MS = 80L;
 
 	private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 	private static final ConcurrentHashMap<String, JsonObject> PLAYER_CACHE = new ConcurrentHashMap<>();
+	private static final ConcurrentHashMap<String, CompletableFuture<Optional<JsonObject>>> PLAYER_IN_FLIGHT =
+		new ConcurrentHashMap<>();
 	/** Mojang names do not change during this client session often enough to justify repeat lookups. */
 	private static final ConcurrentHashMap<String, UuidName> UUID_NAME_CACHE = new ConcurrentHashMap<>();
 	/** Small pool so museum + election (and other GETs) can overlap while spacing starts. */
@@ -47,6 +60,11 @@ public final class HypixelApiClient {
 		return t;
 	});
 
+	/** Shared so auth, resources and /pv calls to api.vyriv.dev reuse one warm connection. */
+	public static HttpClient http() {
+		return HTTP;
+	}
+
 	public static ExecutorService parseExecutor() {
 		return PARSE_EXECUTOR;
 	}
@@ -54,6 +72,10 @@ public final class HypixelApiClient {
 	public static ExecutorService networkExecutor() {
 		return EXECUTOR;
 	}
+
+	private static final long ELECTION_TTL_MS = 10L * 60L * 1000L;
+	private static volatile CompletableFuture<Optional<JsonObject>> electionFuture;
+	private static volatile long electionFetchedAtMillis;
 
 	/** Next allowed request start time. Claimed with CAS so sleep happens off the shared path. */
 	private static final AtomicLong NEXT_REQUEST_AT_MILLIS = new AtomicLong();
@@ -65,48 +87,249 @@ public final class HypixelApiClient {
 		return true;
 	}
 
+	private enum LookupStatus { FOUND, MISSING, FAILED }
+
+	private record NameLookup(LookupStatus status, UuidName found, String source, long ageSeconds, long ms, String detail) {
+		static NameLookup failed(long ms, String detail) {
+			return new NameLookup(LookupStatus.FAILED, null, null, 0L, ms, detail);
+		}
+
+		boolean foundFor(String requested) {
+			return this.status == LookupStatus.FOUND && this.found != null && requested.equalsIgnoreCase(this.found.name());
+		}
+
+		boolean serverStale() {
+			return "stale".equals(this.source);
+		}
+
+		String describe() {
+			return this.status.name().toLowerCase(Locale.ROOT)
+				+ (this.source == null ? "" : "/" + this.source)
+				+ (this.detail == null ? "" : "(" + this.detail + ")")
+				+ " " + this.ms + "ms";
+		}
+	}
+
 	public static CompletableFuture<Optional<UuidName>> resolveUuid(String name) {
 		String cleaned = name == null ? "" : name.trim();
 		if (cleaned.isBlank()) {
 			return CompletableFuture.completedFuture(Optional.empty());
 		}
+		long startedNanos = System.nanoTime();
 		UuidName cached = UUID_NAME_CACHE.get(cleaned.toLowerCase(Locale.ROOT));
 		if (cached != null) {
+			logUuid(cleaned, "memory", startedNanos, "");
 			return CompletableFuture.completedFuture(Optional.of(cached));
 		}
-		return CompletableFuture.supplyAsync(() -> {
-			try {
-				HttpRequest request = HttpRequest.newBuilder(
-					MOJANG_PROFILE.resolve(URLEncoder.encode(cleaned, StandardCharsets.UTF_8))
-				).timeout(TIMEOUT).GET().build();
-				HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
-				if (response.statusCode() < 200 || response.statusCode() >= 300 || response.body() == null || response.body().isBlank()) {
-					return Optional.<UuidName>empty();
+		return CompletableFuture.supplyAsync(() -> NameUuidStore.get(cleaned), EXECUTOR).thenCompose(stored -> {
+			if (stored != null) {
+				logUuid(cleaned, "disk", startedNanos, " savedAgo=" + (System.currentTimeMillis() - stored.savedAtMs()) / 60_000L + "min");
+				rememberUuid(stored.value(), -1L);
+				if (System.currentTimeMillis() - stored.savedAtMs() > DISK_UUID_RECHECK_MS) {
+					recheckDiskUuid(cleaned, stored.value());
 				}
-				JsonObject root = JsonParser.parseString(response.body()).getAsJsonObject();
-				UUID uuid = parseUndashedUuid(root.has("id") ? root.get("id").getAsString() : null);
-				String resolved = root.has("name") ? root.get("name").getAsString() : cleaned;
-				if (uuid == null) {
-					return Optional.empty();
-				}
-				UuidName uuidName = new UuidName(uuid, resolved);
-				UUID_NAME_CACHE.put(cleaned.toLowerCase(Locale.ROOT), uuidName);
-				UUID_NAME_CACHE.put(resolved.toLowerCase(Locale.ROOT), uuidName);
-				return Optional.of(uuidName);
-			} catch (IOException | InterruptedException exception) {
-				BetterPV.LOGGER.warn("Mojang UUID lookup failed for {}", cleaned, exception);
-				if (exception instanceof InterruptedException) {
-					Thread.currentThread().interrupt();
-				}
-				return Optional.empty();
-			} catch (RuntimeException exception) {
-				if (!SoftDataFailure.isSoft(exception)) {
-					throw exception;
-				}
-				BetterPV.LOGGER.warn("Mojang UUID lookup parse failed for {}", cleaned, exception);
-				return Optional.empty();
+				return CompletableFuture.completedFuture(Optional.of(stored.value()));
 			}
-		}, EXECUTOR);
+			return raceUuidLookups(cleaned, startedNanos);
+		});
+	}
+
+	// Shared server cache and Mojang race; Mojang is the authority, the server
+	// entry wins only when fresh, and an older server entry is used only when
+	// Mojang can't answer.
+	private static CompletableFuture<Optional<UuidName>> raceUuidLookups(String cleaned, long startedNanos) {
+		CompletableFuture<NameLookup> server = CompletableFuture
+			.supplyAsync(() -> lookupServerUuid(cleaned, false), EXECUTOR)
+			.exceptionally(error -> NameLookup.failed(-1L, "error"));
+		CompletableFuture<NameLookup> mojang = CompletableFuture
+			.supplyAsync(() -> lookupMojangUuid(cleaned), EXECUTOR)
+			.exceptionally(error -> NameLookup.failed(-1L, "error"));
+		CompletableFuture<Optional<UuidName>> result = new CompletableFuture<>();
+		Runnable decide = () -> decideUuid(cleaned, startedNanos, server, mojang, result);
+		server.thenRun(decide);
+		mojang.thenRun(decide);
+		CompletableFuture.allOf(server, mojang).thenRun(() -> reconcileUuid(cleaned, server.join(), mojang.join()));
+		return result;
+	}
+
+	private static void decideUuid(
+		String cleaned,
+		long startedNanos,
+		CompletableFuture<NameLookup> serverFut,
+		CompletableFuture<NameLookup> mojangFut,
+		CompletableFuture<Optional<UuidName>> result
+	) {
+		synchronized (result) {
+			if (result.isDone()) {
+				return;
+			}
+			NameLookup server = serverFut.getNow(null);
+			NameLookup mojang = mojangFut.getNow(null);
+			String detail = " server=" + (server == null ? "pending" : server.describe())
+				+ " mojang=" + (mojang == null ? "pending" : mojang.describe());
+			if (server != null && server.foundFor(cleaned) && !server.serverStale()) {
+				rememberUuid(server.found(), System.currentTimeMillis() - server.ageSeconds() * 1000L);
+				logUuid(cleaned, "mojang".equals(server.source()) ? "mojang via=server" : "server-cache", startedNanos, detail);
+				result.complete(Optional.of(server.found()));
+				return;
+			}
+			if (mojang == null) {
+				return;
+			}
+			if (mojang.status() == LookupStatus.FOUND) {
+				rememberUuid(mojang.found(), System.currentTimeMillis());
+				logUuid(cleaned, "mojang", startedNanos, detail);
+				result.complete(Optional.of(mojang.found()));
+				return;
+			}
+			if (mojang.status() == LookupStatus.MISSING) {
+				logUuid(cleaned, "not-found", startedNanos, detail);
+				result.complete(Optional.empty());
+				return;
+			}
+			if (server == null) {
+				return;
+			}
+			if (server.foundFor(cleaned)) {
+				// Not remembered: a fallback must not be extended into the caches.
+				logUuid(cleaned, "stale-fallback", startedNanos, detail + " age=" + server.ageSeconds() + "s");
+				result.complete(Optional.of(server.found()));
+				return;
+			}
+			logUuid(cleaned, "unavailable", startedNanos, detail);
+			result.complete(Optional.empty());
+		}
+	}
+
+	// Runs once both sides answered. A Mojang answer that contradicts the server
+	// makes the server re-check Mojang itself; clients never write mappings.
+	private static void reconcileUuid(String cleaned, NameLookup server, NameLookup mojang) {
+		if (mojang.status() == LookupStatus.FOUND) {
+			rememberUuid(mojang.found(), System.currentTimeMillis());
+			boolean serverCurrent = server.foundFor(cleaned) && !server.serverStale()
+				&& server.found().uuid().equals(mojang.found().uuid());
+			if (!serverCurrent && server.status() != LookupStatus.FAILED) {
+				BetterPV.LOGGER.info("[PV timing] {} uuid server out of date ({}), asking it to re-check", cleaned, server.describe());
+				refreshServerUuid(cleaned);
+			}
+		} else if (mojang.status() == LookupStatus.MISSING) {
+			forgetUuid(cleaned);
+			if (server.status() == LookupStatus.FOUND) {
+				BetterPV.LOGGER.info("[PV timing] {} uuid gone on Mojang but server had it, asking it to re-check", cleaned);
+				refreshServerUuid(cleaned);
+			}
+		}
+	}
+
+	// Disk entries are served straight away; older ones are confirmed in the
+	// background so a rename is dropped by the next /pv.
+	private static void recheckDiskUuid(String cleaned, UuidName stored) {
+		CompletableFuture.supplyAsync(() -> lookupMojangUuid(cleaned), EXECUTOR).thenAccept(mojang -> {
+			if (mojang.status() == LookupStatus.FOUND) {
+				if (!mojang.found().uuid().equals(stored.uuid())) {
+					BetterPV.LOGGER.warn("[PV timing] {} uuid disk entry was out of date, replaced", cleaned);
+					refreshServerUuid(cleaned);
+				}
+				rememberUuid(mojang.found(), System.currentTimeMillis());
+			} else if (mojang.status() == LookupStatus.MISSING) {
+				BetterPV.LOGGER.warn("[PV timing] {} uuid disk entry no longer exists on Mojang, dropped", cleaned);
+				forgetUuid(cleaned);
+				refreshServerUuid(cleaned);
+			}
+		});
+	}
+
+	private static void refreshServerUuid(String cleaned) {
+		CompletableFuture.runAsync(() -> lookupServerUuid(cleaned, true), EXECUTOR);
+	}
+
+	// savedAtMs < 0 keeps the existing disk entry untouched.
+	private static void rememberUuid(UuidName uuidName, long savedAtMs) {
+		String key = uuidName.name().toLowerCase(Locale.ROOT);
+		UUID_NAME_CACHE.put(key, uuidName);
+		UUID_NAME_CACHE.entrySet().removeIf(e -> e.getValue().uuid().equals(uuidName.uuid()) && !e.getKey().equals(key));
+		if (savedAtMs >= 0L) {
+			NameUuidStore.put(uuidName.name(), uuidName.uuid(), uuidName.name(), savedAtMs);
+		}
+	}
+
+	private static void forgetUuid(String cleaned) {
+		UUID_NAME_CACHE.remove(cleaned.toLowerCase(Locale.ROOT));
+		NameUuidStore.forget(cleaned);
+	}
+
+	private static void logUuid(String name, String source, long startedNanos, String detail) {
+		BetterPV.LOGGER.info("[PV timing] {} uuid {} {}ms{}", name, source, (System.nanoTime() - startedNanos) / 1_000_000L, detail);
+	}
+
+	private static NameLookup lookupMojangUuid(String cleaned) {
+		long startedNanos = System.nanoTime();
+		try {
+			HttpRequest request = HttpRequest.newBuilder(
+				MOJANG_PROFILE.resolve(URLEncoder.encode(cleaned, StandardCharsets.UTF_8))
+			).timeout(UUID_LOOKUP_TIMEOUT).GET().build();
+			HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+			long ms = (System.nanoTime() - startedNanos) / 1_000_000L;
+			if (response.statusCode() == 404 || response.statusCode() == 204) {
+				return new NameLookup(LookupStatus.MISSING, null, null, 0L, ms, null);
+			}
+			if (response.statusCode() != 200 || response.body() == null || response.body().isBlank()) {
+				return NameLookup.failed(ms, "status " + response.statusCode());
+			}
+			JsonObject root = JsonParser.parseString(response.body()).getAsJsonObject();
+			UUID uuid = parseUndashedUuid(root.has("id") ? root.get("id").getAsString() : null);
+			String resolved = root.has("name") ? root.get("name").getAsString() : null;
+			if (uuid == null || resolved == null || !cleaned.equalsIgnoreCase(resolved)) {
+				return NameLookup.failed(ms, "malformed");
+			}
+			return new NameLookup(LookupStatus.FOUND, new UuidName(uuid, resolved), null, 0L, ms, null);
+		} catch (IOException | InterruptedException exception) {
+			if (exception instanceof InterruptedException) {
+				Thread.currentThread().interrupt();
+			}
+			BetterPV.LOGGER.warn("Mojang UUID lookup failed for {}: {}", cleaned, exception.toString());
+			return NameLookup.failed((System.nanoTime() - startedNanos) / 1_000_000L, exception.getClass().getSimpleName());
+		} catch (RuntimeException exception) {
+			BetterPV.LOGGER.warn("Mojang UUID lookup parse failed for {}", cleaned, exception);
+			return NameLookup.failed((System.nanoTime() - startedNanos) / 1_000_000L, "parse");
+		}
+	}
+
+	private static NameLookup lookupServerUuid(String cleaned, boolean refresh) {
+		long startedNanos = System.nanoTime();
+		try {
+			String url = WORKER_BASE + "/hypixel/uuid/" + URLEncoder.encode(cleaned, StandardCharsets.UTF_8)
+				+ (refresh ? "?refresh=1" : "");
+			HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url)).timeout(SERVER_UUID_TIMEOUT).GET();
+			if (!BetterPvSessionAuth.applyAuthHeaders(builder)) {
+				return NameLookup.failed((System.nanoTime() - startedNanos) / 1_000_000L, "auth");
+			}
+			HttpResponse<String> response = HTTP.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+			long ms = (System.nanoTime() - startedNanos) / 1_000_000L;
+			if (response.statusCode() == 404) {
+				return new NameLookup(LookupStatus.MISSING, null, null, 0L, ms, null);
+			}
+			if (response.statusCode() != 200 || response.body() == null) {
+				return NameLookup.failed(ms, "status " + response.statusCode());
+			}
+			JsonObject root = JsonParser.parseString(response.body()).getAsJsonObject();
+			UUID uuid = parseUndashedUuid(root.has("uuid") ? root.get("uuid").getAsString() : null);
+			String resolved = root.has("name") ? root.get("name").getAsString() : null;
+			String source = root.has("source") ? root.get("source").getAsString() : "cache";
+			long age = root.has("age") && root.get("age").isJsonPrimitive() ? root.get("age").getAsLong() : 0L;
+			if (uuid == null || resolved == null) {
+				return NameLookup.failed(ms, "malformed");
+			}
+			return new NameLookup(LookupStatus.FOUND, new UuidName(uuid, resolved), source, Math.max(0L, age), ms, null);
+		} catch (IOException | InterruptedException exception) {
+			if (exception instanceof InterruptedException) {
+				Thread.currentThread().interrupt();
+			}
+			return NameLookup.failed((System.nanoTime() - startedNanos) / 1_000_000L, exception.getClass().getSimpleName());
+		} catch (RuntimeException exception) {
+			BetterPV.LOGGER.warn("Server UUID lookup parse failed for {}", cleaned, exception);
+			return NameLookup.failed((System.nanoTime() - startedNanos) / 1_000_000L, "parse");
+		}
 	}
 
 	public static CompletableFuture<Optional<UuidName>> resolveName(UUID uuid) {
@@ -130,7 +353,8 @@ public final class HypixelApiClient {
 					return Optional.empty();
 				}
 				UuidName uuidName = new UuidName(uuid, resolved);
-				UUID_NAME_CACHE.put(resolved.toLowerCase(Locale.ROOT), uuidName);
+				rememberUuid(uuidName, -1L);
+				NameUuidStore.forgetOtherNames(uuid, resolved);
 				return Optional.of(uuidName);
 			} catch (IOException | InterruptedException exception) {
 				BetterPV.LOGGER.debug("Mojang name lookup failed for {}", id, exception);
@@ -220,14 +444,20 @@ public final class HypixelApiClient {
 		if (cached != null) {
 			return CompletableFuture.completedFuture(Optional.of(cached));
 		}
-		return CompletableFuture.supplyAsync(
+		// Home and Collections both ask for the viewed player at once; share one request.
+		CompletableFuture<Optional<JsonObject>> created = new CompletableFuture<>();
+		CompletableFuture<Optional<JsonObject>> existing = PLAYER_IN_FLIGHT.putIfAbsent(id, created);
+		if (existing != null) {
+			return existing;
+		}
+		CompletableFuture.supplyAsync(
 			() -> {
 				Optional<JsonObject> root = fetchVyrivApi(
 					WORKER_BASE + "/hypixel/player/" + id,
 					"player"
 				);
 				if (root.isEmpty()) {
-					return Optional.empty();
+					return Optional.<JsonObject>empty();
 				}
 				JsonObject body = root.get();
 				JsonObject player = body.has("player") && body.get("player").isJsonObject()
@@ -237,7 +467,15 @@ public final class HypixelApiClient {
 				return Optional.of(player);
 			},
 			EXECUTOR
-		);
+		).whenComplete((value, error) -> {
+			PLAYER_IN_FLIGHT.remove(id, created);
+			if (error != null) {
+				created.completeExceptionally(error);
+			} else {
+				created.complete(value);
+			}
+		});
+		return created;
 	}
 
 	public static CompletableFuture<Optional<JsonObject>> guild(UUID uuid) {
@@ -252,10 +490,31 @@ public final class HypixelApiClient {
 	}
 
 	public static CompletableFuture<Optional<JsonObject>> skyblockElection() {
-		return CompletableFuture.supplyAsync(() -> {
+		// Global data; reuse it across /pv opens and profile switches unless the last fetch failed.
+		long now = System.currentTimeMillis();
+		CompletableFuture<Optional<JsonObject>> cached = electionFuture;
+		if (cached != null && now - electionFetchedAtMillis < ELECTION_TTL_MS && !failed(cached)) {
+			return cached;
+		}
+		CompletableFuture<Optional<JsonObject>> next = CompletableFuture.supplyAsync(() -> {
 			waitForSlot();
 			return getJson(WORKER_BASE + "/hypixel/resources/skyblock/election");
 		}, EXECUTOR);
+		electionFuture = next;
+		electionFetchedAtMillis = now;
+		return next;
+	}
+
+	/** True when a finished lookup failed or came back empty, so callers should retry. */
+	public static boolean failed(CompletableFuture<? extends Optional<?>> future) {
+		if (future == null || !future.isDone()) {
+			return false;
+		}
+		if (future.isCompletedExceptionally()) {
+			return true;
+		}
+		Optional<?> value = future.join();
+		return value == null || value.isEmpty();
 	}
 
 	public static CompletableFuture<Optional<JsonObject>> skyblockBingoResources() {
@@ -287,10 +546,12 @@ public final class HypixelApiClient {
 	}
 
 	private static Optional<JsonObject> getJson(String url) {
-		return getJson(url, true);
+		return getJson(url, true, true);
 	}
 
-	private static Optional<JsonObject> getJson(String url, boolean allowReauth) {
+	// A streamed MISS is cut mid-body when the upstream read fails, so a broken
+	// transfer is retried once (usually a cache HIT by then).
+	private static Optional<JsonObject> getJson(String url, boolean allowReauth, boolean allowStreamRetry) {
 		try {
 			HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url)).timeout(TIMEOUT).GET();
 			boolean needsProxyAuth = url != null && url.startsWith(WORKER_BASE) && url.contains("/hypixel/");
@@ -303,11 +564,29 @@ public final class HypixelApiClient {
 				BetterPvSessionAuth.notifyPlayerIfNeeded();
 				return Optional.empty();
 			}
-			HttpResponse<String> response = HTTP.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+			if (needsProxyAuth) {
+				builder.header("Accept-Encoding", "gzip");
+			}
+			long startedNanos = System.nanoTime();
+			HttpResponse<InputStream> response = HTTP.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+			long headersNanos = System.nanoTime();
+			boolean streamed = "1".equals(response.headers().firstValue("x-hypixel-stream").orElse(""));
+			byte[] bytes;
+			try (InputStream raw = response.body()) {
+				bytes = raw.readAllBytes();
+			} catch (IOException exception) {
+				logTiming(url, response, -1, startedNanos, headersNanos);
+				if (streamed && allowStreamRetry) {
+					BetterPV.LOGGER.warn("Hypixel GET {} stream broke ({}), retrying once", url, exception.toString());
+					return getJson(url, allowReauth, false);
+				}
+				throw exception;
+			}
+			logTiming(url, response, bytes.length, startedNanos, headersNanos);
 			if (response.statusCode() == 401 && needsProxyAuth) {
 				BetterPvSessionAuth.invalidate();
 				if (allowReauth) {
-					return getJson(url, false);
+					return getJson(url, false, allowStreamRetry);
 				}
 				BetterPV.LOGGER.warn("Hypixel GET {} unauthorized after re-auth", url);
 				return Optional.empty();
@@ -316,11 +595,26 @@ public final class HypixelApiClient {
 				BetterPV.LOGGER.warn("Hypixel GET {} session auth unavailable (503)", url);
 				return Optional.empty();
 			}
-			if (response.statusCode() < 200 || response.statusCode() >= 300 || response.body() == null || response.body().isBlank()) {
+			if (response.statusCode() < 200 || response.statusCode() >= 300 || bytes.length == 0) {
 				BetterPV.LOGGER.warn("Hypixel GET {} failed status={}", url, response.statusCode());
 				return Optional.empty();
 			}
-			JsonElement element = JsonParser.parseString(response.body());
+			JsonElement element;
+			try {
+				InputStream body = new ByteArrayInputStream(bytes);
+				if (response.headers().firstValue("Content-Encoding").orElse("").equalsIgnoreCase("gzip")) {
+					body = new GZIPInputStream(body, 64 * 1024);
+				}
+				try (Reader reader = new InputStreamReader(body, StandardCharsets.UTF_8)) {
+					element = JsonParser.parseReader(reader);
+				}
+			} catch (IOException | JsonParseException exception) {
+				if (streamed && allowStreamRetry) {
+					BetterPV.LOGGER.warn("Hypixel GET {} stream incomplete ({}), retrying once", url, exception.toString());
+					return getJson(url, allowReauth, false);
+				}
+				throw exception;
+			}
 			if (!element.isJsonObject()) {
 				return Optional.empty();
 			}
@@ -336,6 +630,29 @@ public final class HypixelApiClient {
 			}
 			return Optional.empty();
 		}
+	}
+
+	private static void logTiming(String url, HttpResponse<?> response, int bytes, long startedNanos, long headersNanos) {
+		long ms = (System.nanoTime() - startedNanos) / 1_000_000L;
+		long headersMs = (headersNanos - startedNanos) / 1_000_000L;
+		String path = url.startsWith(WORKER_BASE) ? url.substring(WORKER_BASE.length()) : url;
+		BetterPV.LOGGER.info(
+			"[PV timing] GET {} {}ms headers={}ms stream={} status={} bytes={} encoding={} cache={} server=[{}] upstream=[bytes={} enc={} prevAge={} {}] arrival=[{}]",
+			path,
+			ms,
+			headersMs,
+			response.headers().firstValue("x-hypixel-stream").orElse("0"),
+			response.statusCode(),
+			bytes,
+			response.headers().firstValue("Content-Encoding").orElse("none"),
+			response.headers().firstValue("x-hypixel-cache").orElse("-"),
+			response.headers().firstValue("server-timing").orElse(""),
+			response.headers().firstValue("x-hypixel-upstream-bytes").orElse("-"),
+			response.headers().firstValue("x-hypixel-upstream-encoding").orElse("-"),
+			response.headers().firstValue("x-hypixel-prev-age").orElse("-"),
+			response.headers().firstValue("x-hypixel-shape").orElse(""),
+			response.headers().firstValue("x-hypixel-arrival").orElse("")
+		);
 	}
 
 	/**

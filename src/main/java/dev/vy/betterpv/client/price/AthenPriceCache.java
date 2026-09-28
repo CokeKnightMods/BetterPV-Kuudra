@@ -17,7 +17,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public final class AthenPriceCache {
-	private static final URI PRICES_URI = URI.create("https://athen.aerii.xyz/prices");
+	private static final URI PRICES_URI = URI.create("https://api.vyriv.dev/v1/prices");
 	private static final Duration TIMEOUT = Duration.ofSeconds(10);
 	private static final long REFRESH_MINUTES = 10L;
 	private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
@@ -63,7 +63,7 @@ public final class AthenPriceCache {
 		try {
 			refresh();
 		} catch (Exception exception) {
-			BetterPV.LOGGER.warn("Failed to refresh Athen prices", exception);
+			BetterPV.LOGGER.warn("Failed to refresh Vyriv prices", exception);
 		}
 	}
 
@@ -71,7 +71,7 @@ public final class AthenPriceCache {
 		HttpRequest request = HttpRequest.newBuilder(PRICES_URI).timeout(TIMEOUT).GET().build();
 		HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
 		if (response.statusCode() < 200 || response.statusCode() >= 300) {
-			throw new IOException("Athen prices HTTP " + response.statusCode());
+			throw new IOException("Vyriv prices HTTP " + response.statusCode());
 		}
 		JsonObject root = JsonParser.parseString(response.body()).getAsJsonObject();
 		Map<String, Double> next = new ConcurrentHashMap<>();
@@ -83,7 +83,7 @@ public final class AthenPriceCache {
 			prices = Map.copyOf(next);
 			bazaarPrices = Map.copyOf(nextBazaar);
 			ready = true;
-			BetterPV.LOGGER.info("Loaded {} Athen price entries ({} bazaar)", next.size(), nextBazaar.size());
+			BetterPV.LOGGER.info("Loaded {} Vyriv price entries ({} bazaar)", next.size(), nextBazaar.size());
 		}
 	}
 
