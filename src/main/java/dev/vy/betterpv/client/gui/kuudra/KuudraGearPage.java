@@ -9,6 +9,7 @@ import dev.vy.betterpv.client.data.KuudraProfileFacts;
 import dev.vy.betterpv.client.gui.PvDraw;
 import dev.vy.betterpv.client.gui.PvTooltip;
 import dev.vy.betterpv.client.gui.crimson.CrimsonUi;
+import dev.vy.betterpv.client.gui.crimson.page.KuudraPage;
 import dev.vy.betterpv.client.gui.inventories.SkyBlockItemFactory;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -25,6 +26,9 @@ public final class KuudraGearPage {
 	private KuudraProfileFacts facts = KuudraProfileFacts.empty();
 	private final List<CrimsonUi.HoverZone> hover = new ArrayList<>();
 	private final Map<String, ItemStack> icons = new HashMap<>();
+	private final KuudraPage overview = new KuudraPage();
+	private boolean detailed;
+	private int switchX, switchY;
 	private int x, y, w, h, leftW, statsScroll, gearScroll, statsMax, gearMax;
 
 	public void apply(CrimsonSnapshot snapshot, JsonObject root, String profileId, UUID player, boolean sameIdentity) {
@@ -33,11 +37,27 @@ public final class KuudraGearPage {
 		if (!sameIdentity) {
 			this.statsScroll = this.gearScroll = 0;
 			this.icons.clear();
+			this.overview.resetScroll();
 		}
 	}
 
-	public void render(GuiGraphicsExtractor g, Font font, int x, int y, int w, int h, int mx, int my) {
+	public void render(GuiGraphicsExtractor g, Font font, int x, int y, int w, int h, int mx, int my, int screenW, int screenH) {
 		this.hover.clear();
+		this.switchX = x;
+		this.switchY = y;
+		for (int i = 0; i < 2; i++) {
+			boolean selected = (i == 1) == this.detailed;
+			int bx = x + i * 76;
+			PvDraw.fill(g, bx, y, 72, 17, selected ? 0xFF2A3A55 : 0xFF16161E);
+			g.outline(bx, y, 72, 17, selected ? PvDraw.COLOR_ACCENT : PvDraw.COLOR_BORDER);
+			PvDraw.text(g, font, i == 0 ? "Overview" : "Details", bx + 7, y + 4, PvDraw.COLOR_TEXT);
+		}
+		y += 22;
+		h -= 22;
+		if (!this.detailed) {
+			this.overview.render(g, font, this.snapshot, x, y, w, h, mx, my, screenW, screenH);
+			return;
+		}
 		PvDraw.textBold(g, font, "Kuudra", x + 2, y + 2, PvDraw.COLOR_GOLD);
 		PvDraw.text(g, font, CrimsonUi.trim(font, "Visible gear across inventory & storage. Hover for details.", w - 4),
 			x + 2, y + 16, PvDraw.COLOR_MUTED);
@@ -172,6 +192,7 @@ public final class KuudraGearPage {
 	}
 
 	public boolean mouseScrolled(double mx, double my, double amount) {
+		if (!this.detailed) return this.overview.mouseScrolled(mx, my, amount);
 		if (mx < this.x || mx >= this.x + this.w || my < this.y || my >= this.y + this.h) return false;
 		if (mx < this.x + this.leftW) this.statsScroll = clamp(this.statsScroll - (int) (amount * 30), this.statsMax);
 		else this.gearScroll = clamp(this.gearScroll - (int) (amount * 30), this.gearMax);
@@ -179,7 +200,23 @@ public final class KuudraGearPage {
 	}
 
 	public void renderTooltip(GuiGraphicsExtractor g, Font font, int mx, int my, int screenW, int screenH) {
+		if (!this.detailed) {
+			this.overview.renderTooltip(g, font, mx, my, screenW, screenH);
+			return;
+		}
 		CrimsonUi.drawHover(g, font, this.hover, mx, my, screenW, screenH);
+	}
+
+	public boolean mouseClicked(double mx, double my) {
+		if (my < this.switchY || my >= this.switchY + 17) return false;
+		for (int i = 0; i < 2; i++) {
+			int x = this.switchX + i * 76;
+			if (mx >= x && mx < x + 72) {
+				this.detailed = i == 1;
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private static int clamp(int value, int max) { return Math.max(0, Math.min(value, max)); }

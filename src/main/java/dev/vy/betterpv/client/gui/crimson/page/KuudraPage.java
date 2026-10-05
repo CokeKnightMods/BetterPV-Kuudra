@@ -73,6 +73,11 @@ public final class KuudraPage {
 		int rightW = w - leftW - GAP;
 		PvDraw.innerPanel(g, x, y, leftW, h);
 		PvDraw.innerPanel(g, x + leftW + GAP, y, rightW, h);
+		if (!snapshot.kuudraCard().gear().loaded()) {
+			this.kuudraMaxScroll = 0;
+			PvDraw.text(g, font, "Loading Kuudra gear...", x + PAD, y + PAD, PvDraw.COLOR_MUTED);
+			return;
+		}
 		drawKuudraTiers(g, font, snapshot, x, y, leftW, h);
 		drawKuudraCard(g, font, snapshot, x + leftW + GAP, y, rightW, h, mouseX, mouseY);
 	}
@@ -129,6 +134,11 @@ public final class KuudraPage {
 		int ly = contentTop - this.kuudraScroll;
 		drawKuudraCardBody(g, font, card, lx, ly, lw, mx, my, this.kuudraY, this.kuudraY + this.kuudraH);
 		g.disableScissor();
+		if (this.kuudraMaxScroll > 0) {
+			int thumb = Math.max(12, this.kuudraH * this.kuudraH / contentH);
+			int thumbY = contentTop + (this.kuudraH - thumb) * this.kuudraScroll / this.kuudraMaxScroll;
+			PvDraw.fill(g, x + w - 3, thumbY, 2, thumb, PvDraw.COLOR_MUTED);
+		}
 	}
 
 	private int measureKuudraCard(Font font, CrimsonKuudraCard card) {
@@ -143,6 +153,7 @@ public final class KuudraPage {
 		ly += SEP_GAP;
 		ly += font.lineHeight + 3;
 		ly += SLOT + 4;
+		ly += SEP_GAP + font.lineHeight + 3 + SLOT + 4;
 		return ly;
 	}
 
@@ -216,6 +227,28 @@ public final class KuudraPage {
 		ly += font.lineHeight + 3;
 		drawArmorRow(g, font, card.mageArmor(), lx, ly, mx, my, clipTop, clipBottom);
 		drawArmorRow(g, font, card.archerArmor(), rightColX, ly, mx, my, clipTop, clipBottom);
+		ly += SLOT + 4;
+		ly = sectionSeparator(g, font, lx - PAD, ly, lw + PAD * 2);
+		drawExtraArmorTitle(g, font, "Tuxedo", card.tuxedoArmor(), lx, ly, colW, clipTop, clipBottom,
+			"Elegant Tuxedo: chestplate, leggings and boots.", "Shows visible pieces; this does not prove live Rend usage.");
+		drawExtraArmorTitle(g, font, "RCM Terror", card.rcmTerrorArmor(), rightColX, ly, colW, clipTop, clipBottom,
+			"Terror pieces with Loving or Necrotic reforges.", "Mage Armor and Archer Armor are selected independently.");
+		ly += font.lineHeight + 3;
+		drawArmorRow(g, font, card.tuxedoArmor(), lx, ly, mx, my, clipTop, clipBottom);
+		drawArmorRow(g, font, card.rcmTerrorArmor(), rightColX, ly, mx, my, clipTop, clipBottom);
+	}
+
+	private void drawExtraArmorTitle(
+		GuiGraphicsExtractor g, Font font, String label, List<CrimsonKuudraCard.ArmorPiece> pieces,
+		int x, int y, int w, int clipTop, int clipBottom, String explanation, String note
+	) {
+		long count = pieces.stream().filter(CrimsonKuudraCard.ArmorPiece::owned).count();
+		int color = count == 3 ? ENABLED : count > 0 ? PvDraw.COLOR_GOLD : PvDraw.COLOR_MUTED;
+		PvDraw.text(g, font, trim(font, label + " [" + count + "/3]", w), x, y, color);
+		int top = Math.max(y, clipTop), bottom = Math.min(y + font.lineHeight, clipBottom);
+		if (bottom > top) this.zones.add(HoverZone.of(x, top, w, bottom - top, List.of(
+			PvTooltip.Line.title(label + " - " + count + "/3 visible", color),
+			PvTooltip.Line.meta(explanation), PvTooltip.Line.meta(note))));
 	}
 
 	private int drawArmorRow(

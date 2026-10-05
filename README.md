@@ -18,7 +18,16 @@ If another mod owns `/pv`, use `/betterpv pv <player> kuudra` or `/betterpv pv <
 
 Open `/pv` or `/pv <player>` and click the **last tab on the right**, marked with an **Infernal Kuudra Key**.
 You can also open it directly with `/pv <player> kuudra` (aliases `kudra` / `qdra`).
-The two panels scroll independently; hover over a row for item details and storage location.
+The default **Overview** uses the compact card also available under Crimson → Kuudra.
+Mage Armor and Archer Armor keep their existing selection. Directly below them are separate
+**Tuxedo** and **RCM Terror** rows with item icons, full lore and visible-piece counts (`0/3` to `3/3`).
+Tuxedo checks the three Elegant Tuxedo pieces; RCM Terror checks Terror chestplate, leggings and boots
+with Loving or Necrotic reforges. Duplicate items cannot complete a missing armor slot.
+Important Items additionally shows a real second Golden Dragon (preferring another held item)
+and a Bonemerang with Rend. These checks describe exposed gear, not live usage.
+
+Select **Details** for the expanded gear and statistics view below. Its two panels scroll independently;
+hover over a row for item details and storage location.
 
 - Rend Terminator, Rend Bonemerang, Ragnarock Axe, Atomsplit, Elegant Tuxedo and Reaper armor
 - Duplex / Fatal Tempo Terminator, Wither Impact with all three scrolls, Warden Helmet, Terror, Aurora and Wither Goggles
@@ -54,7 +63,7 @@ Build and run the parser regression tests with JDK 25:
 ./gradlew :26.1.2:build
 ```
 
-The 26.1.2 build and 20 automated tests were verified. In-game rendering and authenticated Hypixel
+The 26.1.2 build and 28 automated tests were verified. In-game rendering and authenticated Hypixel
 responses have not been tested in this environment.
 
 ## Supported versions

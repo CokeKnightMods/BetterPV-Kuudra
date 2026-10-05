@@ -67,6 +67,8 @@ public final class CrimsonKuudraCard {
 	private final List<ImportantItem> importantItems;
 	private final List<ArmorPiece> mageArmor;
 	private final List<ArmorPiece> archerArmor;
+	private final List<ArmorPiece> tuxedoArmor;
+	private final List<ArmorPiece> rcmTerrorArmor;
 	private final KuudraGearSnapshot gear;
 
 	private CrimsonKuudraCard(
@@ -85,6 +87,8 @@ public final class CrimsonKuudraCard {
 		List<ImportantItem> importantItems,
 		List<ArmorPiece> mageArmor,
 		List<ArmorPiece> archerArmor,
+		List<ArmorPiece> tuxedoArmor,
+		List<ArmorPiece> rcmTerrorArmor,
 		KuudraGearSnapshot gear
 	) {
 		this.kuudraScore = kuudraScore;
@@ -102,6 +106,8 @@ public final class CrimsonKuudraCard {
 		this.importantItems = List.copyOf(importantItems == null ? List.of() : importantItems);
 		this.mageArmor = List.copyOf(mageArmor == null ? List.of() : mageArmor);
 		this.archerArmor = List.copyOf(archerArmor == null ? List.of() : archerArmor);
+		this.tuxedoArmor = List.copyOf(tuxedoArmor == null ? List.of() : tuxedoArmor);
+		this.rcmTerrorArmor = List.copyOf(rcmTerrorArmor == null ? List.of() : rcmTerrorArmor);
 		this.gear = gear == null ? KuudraGearSnapshot.empty() : gear;
 	}
 
@@ -109,7 +115,7 @@ public final class CrimsonKuudraCard {
 		return new CrimsonKuudraCard(
 			0, 0, 0, "", 0, 0, 0, 0, 0, 0, 1.0 / 640.0 * 100.0,
 			List.of("Base 1/640"),
-			List.of(), List.of(), List.of(), KuudraGearSnapshot.empty()
+			List.of(), List.of(), List.of(), List.of(), List.of(), KuudraGearSnapshot.empty()
 		);
 	}
 
@@ -165,7 +171,8 @@ public final class CrimsonKuudraCard {
 
 		return new CrimsonKuudraCard(
 			score, level, mp, power, intel, mf, cata, combat, foraging, sb,
-			vanq.pct, vanq.hover, items, mage, archer, KuudraGearSnapshot.from(member, cats, pets)
+			vanq.pct, vanq.hover, items, mage, archer, scanTuxedoArmor(all), scanRcmTerrorArmor(all),
+			KuudraGearSnapshot.from(member, cats, pets)
 		);
 	}
 
@@ -198,6 +205,8 @@ public final class CrimsonKuudraCard {
 	public List<ImportantItem> importantItems() { return this.importantItems; }
 	public List<ArmorPiece> mageArmor() { return this.mageArmor; }
 	public List<ArmorPiece> archerArmor() { return this.archerArmor; }
+	public List<ArmorPiece> tuxedoArmor() { return this.tuxedoArmor; }
+	public List<ArmorPiece> rcmTerrorArmor() { return this.rcmTerrorArmor; }
 	public KuudraGearSnapshot gear() { return this.gear; }
 
 	public CrimsonKuudraCard withCombatStats(PlayerStatsSnapshot stats) {
@@ -209,7 +218,8 @@ public final class CrimsonKuudraCard {
 		return new CrimsonKuudraCard(
 			this.kuudraScore, this.kuudraLevel, this.magicalPower, this.selectedPower,
 			intel, mf, this.cataLevel, this.combatLevel, this.foragingLevel, this.skyBlockLevel,
-			this.vanquisherChancePct, this.vanquisherHover, this.importantItems, this.mageArmor, this.archerArmor, this.gear
+			this.vanquisherChancePct, this.vanquisherHover, this.importantItems, this.mageArmor, this.archerArmor,
+			this.tuxedoArmor, this.rcmTerrorArmor, this.gear
 		);
 	}
 
@@ -348,8 +358,10 @@ public final class CrimsonKuudraCard {
 		List<ImportantItem> out = new ArrayList<>();
 		out.add(witherImpact(all));
 		out.add(goldenDragon(pets, member));
+		out.add(secondGoldenDragon(pets));
 		out.add(terminator(all, true));
 		out.add(terminator(all, false));
+		out.add(rendBonemerang(all));
 		out.add(ragnarock(all));
 		out.add(sosFlare(all));
 		return out;
@@ -410,6 +422,42 @@ public final class CrimsonKuudraCard {
 			case "UNCOMMON" -> "§a";
 			default -> "§f";
 		};
+	}
+
+	/** Choose a real second pet; prefer a different held item, then the highest level. */
+	static PetSnapshot.Entry secondGoldenDragonEntry(List<PetSnapshot.Entry> pets) {
+		List<PetSnapshot.Entry> dragons = pets.stream()
+			.filter(p -> p != null && "GOLDEN_DRAGON".equalsIgnoreCase(p.type()))
+			.sorted(java.util.Comparator.comparingInt(PetSnapshot.Entry::level).reversed()).toList();
+		if (dragons.size() < 2) return null;
+		PetSnapshot.Entry first = dragons.getFirst();
+		return dragons.stream().skip(1)
+			.filter(p -> first.uuid().isBlank() || p.uuid().isBlank() || !first.uuid().equals(p.uuid()))
+			.max(java.util.Comparator.comparingInt((PetSnapshot.Entry p) -> !p.heldItem().equals(first.heldItem()) ? 1 : 0)
+				.thenComparingInt(PetSnapshot.Entry::level)).orElse(null);
+	}
+
+	private static ImportantItem secondGoldenDragon(PetSnapshot pets) {
+		PetSnapshot.Entry pet = pets == null ? null : secondGoldenDragonEntry(pets.pets());
+		if (pet == null) return missingItem("Second Golden Dragon", "GOLDEN_DRAGON;4");
+		String held = pet.hasHeldItem() ? prettyId(pet.heldItem().replaceFirst("^PET_ITEM_", "")) : "No held item";
+		return new ImportantItem("[Lvl " + pet.level() + "] Golden Dragon #2", true, pet.neuId(),
+			List.of(held), PetLoreResolver.loreFor(pet), PetLoreResolver.displayNameFor(pet));
+	}
+
+	static ImportantItem rendBonemerang(List<InventoryDecoder.Stack> all) {
+		InventoryDecoder.Stack best = null;
+		int bestRend = 0;
+		for (InventoryDecoder.Stack stack : all) {
+			if (!baseId(stack).equals("BONE_BOOMERANG") && !baseId(stack).equals("BONEMERANG")) continue;
+			int rend = enchLevel(NbtAttrs.intMap(stack.extraAttributes(), "enchantments"), "ultimate_rend", "rend");
+			if (rend > bestRend || (rend > 0 && rend == bestRend && prefer(best, stack) == stack)) {
+				best = stack;
+				bestRend = rend;
+			}
+		}
+		if (best == null) return missingItem("Rend Bonemerang", "BONE_BOOMERANG");
+		return ownedItem("Rend Bonemerang", baseId(best), List.of("Rend " + bestRend), best);
 	}
 
 	private static ImportantItem terminator(List<InventoryDecoder.Stack> all, boolean spiritual) {
@@ -572,6 +620,32 @@ public final class CrimsonKuudraCard {
 			return tierColorCode(neu.get("tier").getAsString()) + (plain.isBlank() ? prettyId(itemId) : plain);
 		}
 		return plain;
+	}
+
+	/** Additional rows; the existing Mage/Archer selection is intentionally unchanged. */
+	static List<ArmorPiece> scanTuxedoArmor(List<InventoryDecoder.Stack> all) {
+		return scanExtraArmor(all, false);
+	}
+
+	static List<ArmorPiece> scanRcmTerrorArmor(List<InventoryDecoder.Stack> all) {
+		return scanExtraArmor(all, true);
+	}
+
+	private static List<ArmorPiece> scanExtraArmor(List<InventoryDecoder.Stack> all, boolean rcmTerror) {
+		List<ArmorPiece> out = new ArrayList<>();
+		String set = rcmTerror ? "TERROR" : "ELEGANT_TUXEDO";
+		for (String slot : List.of("CHESTPLATE", "LEGGINGS", "BOOTS")) {
+			InventoryDecoder.Stack best = null;
+			for (InventoryDecoder.Stack stack : all) {
+				String id = baseId(stack).replaceFirst("^(INFERNAL_|FIERY_|BURNING_|HOT_)", "");
+				if (!id.equals(set + "_" + slot)) continue;
+				if (rcmTerror && !isMageReforge(NbtAttrs.string(stack.extraAttributes(), "modifier"))) continue;
+				if (best == null || kuudraTierRank(baseId(stack)) > kuudraTierRank(baseId(best))
+					|| (kuudraTierRank(baseId(stack)) == kuudraTierRank(baseId(best)) && stars(stack) > stars(best))) best = stack;
+			}
+			out.add(best == null ? missingArmor(slot, prettyId(set + "_" + slot), set + "_" + slot) : ownedArmor(best, slot));
+		}
+		return List.copyOf(out);
 	}
 
 	private static List<ArmorPiece> scanMageArmor(List<InventoryDecoder.Stack> all) {

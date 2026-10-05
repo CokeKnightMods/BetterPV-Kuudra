@@ -325,6 +325,9 @@ public final class ProfileViewerScreen extends Screen {
 		int tabWidth = 8 + PvTab.values().length * (IconButtonBar.TAB + IconButtonBar.GAP) - IconButtonBar.GAP;
 		int panelW = Math.min(520, Math.max(tabWidth, this.width - 80 - leftRoom));
 		int contentH = this.homePage.preferredHeight(this.font, panelW - PAD * 2);
+		if (this.tab == PvTab.KUUDRA || (this.tab == PvTab.CRIMSON && activeSub(PvSubTab.CRIMSON_OVERVIEW) == PvSubTab.CRIMSON_KUUDRA)) {
+			contentH = Math.max(contentH, 290);
+		}
 		if (this.tab == PvTab.HOME && activeSub(PvSubTab.HOME_OVERVIEW) == PvSubTab.HOME_MISC) {
 			contentH = Math.max(contentH, 220);
 		}
@@ -642,7 +645,7 @@ public final class ProfileViewerScreen extends Screen {
 			}
 			case KUUDRA -> {
 				prepareStandardBody();
-				this.kuudraGearPage.render(g, this.font, x, y, w, h, mouseX, mouseY);
+				this.kuudraGearPage.render(g, this.font, x, y, w, h, mouseX, mouseY, this.width, this.height);
 			}
 			case BESTIARY -> {
 				this.dungeonPage.blurField();
@@ -840,6 +843,7 @@ public final class ProfileViewerScreen extends Screen {
 				&& this.homeMiscPage.mouseClicked(mx, my);
 			case DUNGEONS -> this.dungeonPage.mouseClicked(mx, my);
 			case CURRENT_PARTY -> this.currentPartyPage.mouseClicked(mx, my);
+			case KUUDRA -> this.kuudraGearPage.mouseClicked(mx, my);
 			case MINING -> this.miningPage.mouseClicked(mx, my);
 			case FORAGING -> this.foragingPage.mouseClicked(mx, my);
 			case FISHING -> this.fishingPage.mouseClicked(mx, my);
