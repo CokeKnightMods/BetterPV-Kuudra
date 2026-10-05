@@ -9,6 +9,8 @@ import net.minecraft.world.item.Items;
 public enum PvTab {
 	HOME(Items.PAPER, "betterpv.tab.home"),
 	DUNGEONS(Items.SKELETON_SKULL, "betterpv.tab.dungeons"),
+	CURRENT_PARTY(Items.PLAYER_HEAD, "betterpv.tab.current_party"),
+	KUUDRA(Items.MAGMA_CREAM, "betterpv.tab.kuudra"),
 	INVENTORIES(Items.CHEST, "betterpv.tab.inventories"),
 	PETS(Items.BONE, "betterpv.tab.pets"),
 	AUCTIONS(Items.GOLD_BLOCK, "betterpv.tab.auctions"),
@@ -50,6 +52,8 @@ public enum PvTab {
 		return switch (raw.trim().toLowerCase(Locale.ROOT)) {
 			case "home" -> HOME;
 			case "dungeons", "dungeon" -> DUNGEONS;
+			case "party", "currentparty", "current_party" -> CURRENT_PARTY;
+			case "kuudra", "kudra", "qdra" -> KUUDRA;
 			case "storage", "inventories", "inventory" -> INVENTORIES;
 			case "pets", "pet" -> PETS;
 			case "auctions", "auction" -> AUCTIONS;
@@ -72,6 +76,8 @@ public enum PvTab {
 		return new String[] {
 			"home",
 			"dungeons",
+			"party",
+			"kuudra",
 			"storage",
 			"pets",
 			"auctions",

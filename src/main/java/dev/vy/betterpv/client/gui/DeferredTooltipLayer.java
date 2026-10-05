@@ -4,6 +4,7 @@ import dev.vy.betterpv.client.gui.auctions.AuctionPage;
 import dev.vy.betterpv.client.gui.bestiary.BestiaryPage;
 import dev.vy.betterpv.client.gui.collections.CollectionsPage;
 import dev.vy.betterpv.client.gui.crimson.CrimsonPage;
+import dev.vy.betterpv.client.gui.kuudra.KuudraGearPage;
 import dev.vy.betterpv.client.gui.dungeons.DungeonPage;
 import dev.vy.betterpv.client.gui.events.EventsPage;
 import dev.vy.betterpv.client.gui.fishing.FishingPage;
@@ -58,6 +59,7 @@ final class DeferredTooltipLayer {
 		ForagingPage foragingPage,
 		FishingPage fishingPage,
 		CrimsonPage crimsonPage,
+		KuudraGearPage kuudraGearPage,
 		RiftPage riftPage,
 		MuseumPage museumPage,
 		EventsPage eventsPage,
@@ -95,6 +97,7 @@ final class DeferredTooltipLayer {
 			case FORAGING -> foragingPage.renderTooltip(g, font, mouseX, mouseY, width, height);
 			case FISHING -> fishingPage.renderTooltip(g, font, mouseX, mouseY, width, height);
 			case CRIMSON -> crimsonPage.renderTooltip(g, font, mouseX, mouseY, width, height);
+			case KUUDRA -> kuudraGearPage.renderTooltip(g, font, mouseX, mouseY, width, height);
 			case RIFT -> riftPage.renderTooltip(g, font, mouseX, mouseY, width, height);
 			case MUSEUM -> museumPage.renderTooltip(g, font, mouseX, mouseY, width, height);
 			case EVENTS -> eventsPage.renderTooltip(

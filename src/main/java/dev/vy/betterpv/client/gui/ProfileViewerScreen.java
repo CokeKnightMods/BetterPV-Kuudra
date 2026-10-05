@@ -26,6 +26,7 @@ import dev.vy.betterpv.client.gui.nav.MuseumSort;
 import dev.vy.betterpv.client.gui.nav.PvSubTab;
 import dev.vy.betterpv.client.gui.nav.PvTab;
 import dev.vy.betterpv.client.gui.pets.PetsPage;
+import dev.vy.betterpv.client.gui.party.CurrentPartyPage;
 import dev.vy.betterpv.client.gui.rift.RiftPage;
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -52,6 +53,8 @@ public final class ProfileViewerScreen extends Screen {
 	private final HomePage homePage;
 	private final MiscStatsPage homeMiscPage = new MiscStatsPage();
 	private final DungeonPage dungeonPage = new DungeonPage();
+	private final CurrentPartyPage currentPartyPage = new CurrentPartyPage(this);
+	private final dev.vy.betterpv.client.gui.kuudra.KuudraGearPage kuudraGearPage = new dev.vy.betterpv.client.gui.kuudra.KuudraGearPage();
 	private final InventoryPage inventoryPage = new InventoryPage();
 	private final PetsPage petsPage = new PetsPage();
 	private final AuctionPage auctionPage = new AuctionPage();
@@ -293,6 +296,8 @@ public final class ProfileViewerScreen extends Screen {
 			this.profilesRoot = loaded.profilesRoot();
 		}
 		String viewed = this.playerUuid == null ? "" : HypixelApiClient.undashed(this.playerUuid);
+		this.currentPartyPage.apply(this.profilesRoot, this.profileId, this.playerUuid, this.homePage.playerName());
+		this.kuudraGearPage.apply(loaded.crimson(), this.profilesRoot, this.profileId, this.playerUuid, sameIdentity);
 		this.profileSelector.applyChoices(loaded.profiles(), viewed, this.homePage.playerName());
 		if (!sameIdentity) {
 			this.dataLoader.resetForNewLoad();
@@ -317,7 +322,8 @@ public final class ProfileViewerScreen extends Screen {
 		int topRoom = IconButtonBar.TAB + 4;
 		int leftRoom = IconButtonBar.TAB + 4;
 
-		int panelW = Math.min(520, Math.max(420, this.width - 80 - leftRoom));
+		int tabWidth = 8 + PvTab.values().length * (IconButtonBar.TAB + IconButtonBar.GAP) - IconButtonBar.GAP;
+		int panelW = Math.min(520, Math.max(tabWidth, this.width - 80 - leftRoom));
 		int contentH = this.homePage.preferredHeight(this.font, panelW - PAD * 2);
 		if (this.tab == PvTab.HOME && activeSub(PvSubTab.HOME_OVERVIEW) == PvSubTab.HOME_MISC) {
 			contentH = Math.max(contentH, 220);
@@ -411,6 +417,7 @@ public final class ProfileViewerScreen extends Screen {
 				this.foragingPage,
 				this.fishingPage,
 				this.crimsonPage,
+				this.kuudraGearPage,
 				this.riftPage,
 				this.museumPage,
 				this.eventsPage,
@@ -629,6 +636,14 @@ public final class ProfileViewerScreen extends Screen {
 					x, y, w, h, mouseX, mouseY, delta
 				);
 			}
+			case CURRENT_PARTY -> {
+				prepareStandardBody();
+				this.currentPartyPage.render(g, this.font, x, y, w, h, mouseX, mouseY);
+			}
+			case KUUDRA -> {
+				prepareStandardBody();
+				this.kuudraGearPage.render(g, this.font, x, y, w, h, mouseX, mouseY);
+			}
 			case BESTIARY -> {
 				this.dungeonPage.blurField();
 				this.bestiaryLayout.render(
@@ -824,6 +839,7 @@ public final class ProfileViewerScreen extends Screen {
 			case HOME -> activeSub(PvSubTab.HOME_OVERVIEW) == PvSubTab.HOME_MISC
 				&& this.homeMiscPage.mouseClicked(mx, my);
 			case DUNGEONS -> this.dungeonPage.mouseClicked(mx, my);
+			case CURRENT_PARTY -> this.currentPartyPage.mouseClicked(mx, my);
 			case MINING -> this.miningPage.mouseClicked(mx, my);
 			case FORAGING -> this.foragingPage.mouseClicked(mx, my);
 			case FISHING -> this.fishingPage.mouseClicked(mx, my);
@@ -869,6 +885,8 @@ public final class ProfileViewerScreen extends Screen {
 			}
 			case MUSEUM -> this.museumPage.mouseScrolled(mouseX, mouseY, scrollY);
 			case DUNGEONS -> this.dungeonPage.mouseScrolled(scrollY);
+			case CURRENT_PARTY -> this.currentPartyPage.mouseScrolled(mouseX, mouseY, scrollY);
+			case KUUDRA -> this.kuudraGearPage.mouseScrolled(mouseX, mouseY, scrollY);
 			case PETS -> this.petsPage.mouseScrolled(scrollY);
 			case AUCTIONS -> this.auctionPage.mouseScrolled(mouseX, mouseY, scrollY);
 			case COLLECTIONS -> this.collectionsPage.mouseScrolled(

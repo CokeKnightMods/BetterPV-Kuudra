@@ -67,6 +67,7 @@ public final class CrimsonKuudraCard {
 	private final List<ImportantItem> importantItems;
 	private final List<ArmorPiece> mageArmor;
 	private final List<ArmorPiece> archerArmor;
+	private final KuudraGearSnapshot gear;
 
 	private CrimsonKuudraCard(
 		double kuudraScore,
@@ -83,7 +84,8 @@ public final class CrimsonKuudraCard {
 		List<String> vanquisherHover,
 		List<ImportantItem> importantItems,
 		List<ArmorPiece> mageArmor,
-		List<ArmorPiece> archerArmor
+		List<ArmorPiece> archerArmor,
+		KuudraGearSnapshot gear
 	) {
 		this.kuudraScore = kuudraScore;
 		this.kuudraLevel = kuudraLevel;
@@ -100,13 +102,14 @@ public final class CrimsonKuudraCard {
 		this.importantItems = List.copyOf(importantItems == null ? List.of() : importantItems);
 		this.mageArmor = List.copyOf(mageArmor == null ? List.of() : mageArmor);
 		this.archerArmor = List.copyOf(archerArmor == null ? List.of() : archerArmor);
+		this.gear = gear == null ? KuudraGearSnapshot.empty() : gear;
 	}
 
 	public static CrimsonKuudraCard empty() {
 		return new CrimsonKuudraCard(
 			0, 0, 0, "", 0, 0, 0, 0, 0, 0, 1.0 / 640.0 * 100.0,
 			List.of("Base 1/640"),
-			List.of(), List.of(), List.of()
+			List.of(), List.of(), List.of(), KuudraGearSnapshot.empty()
 		);
 	}
 
@@ -162,7 +165,7 @@ public final class CrimsonKuudraCard {
 
 		return new CrimsonKuudraCard(
 			score, level, mp, power, intel, mf, cata, combat, foraging, sb,
-			vanq.pct, vanq.hover, items, mage, archer
+			vanq.pct, vanq.hover, items, mage, archer, KuudraGearSnapshot.from(member, cats, pets)
 		);
 	}
 
@@ -195,6 +198,7 @@ public final class CrimsonKuudraCard {
 	public List<ImportantItem> importantItems() { return this.importantItems; }
 	public List<ArmorPiece> mageArmor() { return this.mageArmor; }
 	public List<ArmorPiece> archerArmor() { return this.archerArmor; }
+	public KuudraGearSnapshot gear() { return this.gear; }
 
 	public CrimsonKuudraCard withCombatStats(PlayerStatsSnapshot stats) {
 		if (stats == null) {
@@ -205,7 +209,7 @@ public final class CrimsonKuudraCard {
 		return new CrimsonKuudraCard(
 			this.kuudraScore, this.kuudraLevel, this.magicalPower, this.selectedPower,
 			intel, mf, this.cataLevel, this.combatLevel, this.foragingLevel, this.skyBlockLevel,
-			this.vanquisherChancePct, this.vanquisherHover, this.importantItems, this.mageArmor, this.archerArmor
+			this.vanquisherChancePct, this.vanquisherHover, this.importantItems, this.mageArmor, this.archerArmor, this.gear
 		);
 	}
 

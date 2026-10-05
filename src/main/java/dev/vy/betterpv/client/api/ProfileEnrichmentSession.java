@@ -221,6 +221,7 @@ final class ProfileEnrichmentSession {
 		return switch (tab) {
 			case HOME -> Job.NETWORTH;
 			case DUNGEONS -> Job.DUNGEONS;
+			case CURRENT_PARTY -> null; // Already available in the core profile response.
 			case INVENTORIES -> Job.INVENTORY;
 			case PETS -> Job.PETS;
 			case AUCTIONS -> Job.AUCTIONS;
@@ -229,7 +230,7 @@ final class ProfileEnrichmentSession {
 			case MINING -> Job.MINING;
 			case FORAGING -> Job.FORAGING;
 			case FISHING -> Job.FISHING;
-			case CRIMSON -> Job.CRIMSON;
+			case CRIMSON, KUUDRA -> Job.CRIMSON;
 			case RIFT -> Job.RIFT;
 			case MUSEUM -> Job.MUSEUM;
 			case BESTIARY -> Job.BESTIARY;

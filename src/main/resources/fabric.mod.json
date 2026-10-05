@@ -2,11 +2,15 @@
 	"schemaVersion": 1,
 	"id": "betterpv",
 	"version": "${version}",
-	"name": "BetterPV",
-	"description": "Standalone SkyBlock Profile Viewer",
+	"name": "BetterPV (Kuudra & Party)",
+	"description": "Unofficial BetterPV build with Kuudra gear overview and completed-run party history",
 	"authors": [
 		"Vy"
 	],
+	"contributors": ["CokeKnightMods"],
+	"contact": {
+		"sources": "https://github.com/CokeKnightMods/BetterPV-Kuudra"
+	},
 	"license": "MPL-2.0",
 	"icon": "assets/betterpv/icon.png",
 	"environment": "client",
