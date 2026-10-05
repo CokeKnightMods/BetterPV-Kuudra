@@ -16,7 +16,8 @@ If another mod owns `/pv`, use `/betterpv pv <player> kuudra` or `/betterpv pv <
 
 ### Kuudra
 
-Open `/pv <player> kuudra` (aliases `kudra` / `qdra`) or click the magma-cream tab.
+Open `/pv` or `/pv <player>` and click the **last tab on the right**, marked with an **Infernal Kuudra Key**.
+You can also open it directly with `/pv <player> kuudra` (aliases `kudra` / `qdra`).
 The two panels scroll independently; hover over a row for item details and storage location.
 
 - Rend Terminator, Rend Bonemerang, Ragnarock Axe, Atomsplit, Elegant Tuxedo and Reaper armor

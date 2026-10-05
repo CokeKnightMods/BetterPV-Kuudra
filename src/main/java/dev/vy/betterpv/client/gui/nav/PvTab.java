@@ -1,5 +1,6 @@
 package dev.vy.betterpv.client.gui.nav;
 
+import dev.vy.betterpv.client.gui.inventories.SkyBlockItemFactory;
 import java.util.Locale;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.item.Item;
@@ -10,7 +11,6 @@ public enum PvTab {
 	HOME(Items.PAPER, "betterpv.tab.home"),
 	DUNGEONS(Items.SKELETON_SKULL, "betterpv.tab.dungeons"),
 	CURRENT_PARTY(Items.PLAYER_HEAD, "betterpv.tab.current_party"),
-	KUUDRA(Items.MAGMA_CREAM, "betterpv.tab.kuudra"),
 	INVENTORIES(Items.CHEST, "betterpv.tab.inventories"),
 	PETS(Items.BONE, "betterpv.tab.pets"),
 	AUCTIONS(Items.GOLD_BLOCK, "betterpv.tab.auctions"),
@@ -23,7 +23,8 @@ public enum PvTab {
 	RIFT(Items.ENDER_EYE, "betterpv.tab.rift"),
 	MUSEUM(Items.EMERALD, "betterpv.tab.museum"),
 	BESTIARY(Items.IRON_SWORD, "betterpv.tab.bestiary"),
-	EVENTS(Items.FIREWORK_ROCKET, "betterpv.tab.events");
+	EVENTS(Items.FIREWORK_ROCKET, "betterpv.tab.events"),
+	KUUDRA(Items.PLAYER_HEAD, "betterpv.tab.kuudra");
 
 	private final Item iconItem;
 	private final String langKey;
@@ -34,6 +35,7 @@ public enum PvTab {
 	}
 
 	public ItemStack icon() {
+		if (this == KUUDRA) return SkyBlockItemFactory.kuudraTabIcon();
 		return new ItemStack(this.iconItem);
 	}
 
@@ -77,7 +79,6 @@ public enum PvTab {
 			"home",
 			"dungeons",
 			"party",
-			"kuudra",
 			"storage",
 			"pets",
 			"auctions",
@@ -90,7 +91,8 @@ public enum PvTab {
 			"rift",
 			"museum",
 			"bestiary",
-			"events"
+			"events",
+			"kuudra"
 		};
 	}
 

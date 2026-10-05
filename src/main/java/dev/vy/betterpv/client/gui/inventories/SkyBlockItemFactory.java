@@ -35,6 +35,10 @@ public final class SkyBlockItemFactory {
 	private static final String HOTM_TAB_SKULL_VALUE =
 		"ewogICJ0aW1lc3RhbXAiIDogMTYxODk5OTIyNDk2OSwKICAicHJvZmlsZUlkIiA6ICI1NjY3NWIyMjMyZjA0ZWUwODkxNzllOWM5MjA2Y2ZlOCIsCiAgInByb2ZpbGVOYW1lIiA6ICJUaGVJbmRyYSIsCiAgInNpZ25hdHVyZVJlcXVpcmVkIiA6IHRydWUsCiAgInRleHR1cmVzIiA6IHsKICAgICJTS0lOIiA6IHsKICAgICAgInVybCIgOiAiaHR0cDovL3RleHR1cmVzLm1pbmVjcmFmdC5uZXQvdGV4dHVyZS83NDIxM2RjNmRjNGIxNjQxZGVmZDMzM2Y0YTQ3MzJjYzcxNGRkNjc3NzE4ZmExMGYxNDBhNjkzOWMxMmFhMzJiIgogICAgfQogIH0KfQ==";
 
+	/** NEU KUUDRA_INFERNAL_TIER_KEY skull; usable before the item repository finishes loading. */
+	private static final String KUUDRA_KEY_SKULL_VALUE =
+		"ewogICJ0aW1lc3RhbXAiIDogMTY0MzY1MjkxMzA5NiwKICAicHJvZmlsZUlkIiA6ICJjNTlkMDFlMDI4MWI0MGNhOTczNjc5ODc4NmRmN2FmNiIsCiAgInByb2ZpbGVOYW1lIiA6ICJvWm9va3hQYXJjY2VyIiwKICAic2lnbmF0dXJlUmVxdWlyZWQiIDogdHJ1ZSwKICAidGV4dHVyZXMiIDogewogICAgIlNLSU4iIDogewogICAgICAidXJsIiA6ICJodHRwOi8vdGV4dHVyZXMubWluZWNyYWZ0Lm5ldC90ZXh0dXJlLzgyZWUyNTQxNGFhN2VmYjRhMmI0OTAxYzZlMzNlNWVhYTcwNWE2YWIyMTJlYmViZmQ2YTRkZTk4NDEyNWM3YTAiCiAgICB9CiAgfQp9";
+
 	/**
 	 * Classic Flawless gemstone player-head textures (pre-item-model NEU).
 	 * Modern gems are paper; these skull Values still render the familiar 3D cubes.
@@ -303,6 +307,15 @@ public final class SkyBlockItemFactory {
 		}
 		ItemStack head = new ItemStack(Items.PLAYER_HEAD);
 		SkullTextureApplier.applyValue(head, HOTM_TAB_SKULL_VALUE, null);
+		return head;
+	}
+
+	/** Infernal Kuudra Key for the final profile tab, including a reliable skull fallback. */
+	public static ItemStack kuudraTabIcon() {
+		ItemStack sky = iconStack("KUUDRA_INFERNAL_TIER_KEY");
+		if (SkullTextureApplier.isTexturedPlayerHead(sky)) return sky;
+		ItemStack head = new ItemStack(Items.PLAYER_HEAD);
+		SkullTextureApplier.applyValue(head, KUUDRA_KEY_SKULL_VALUE, null);
 		return head;
 	}
 
